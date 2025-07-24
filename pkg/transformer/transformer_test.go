@@ -1,4 +1,3 @@
-```go
 package transformer
 
 import (
@@ -151,4 +150,3 @@ spec:
 		require.Error(t, err)
 	})
 }
-```
