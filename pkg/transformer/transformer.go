@@ -1,4 +1,3 @@
-```go
 package transformer
 
 import (
@@ -224,4 +223,3 @@ func (t *VMToPodTransformer) applyInstancetypeAndPreferences(vm *virtv1.VirtualM
 }
 
 var codec = serializer.NewCodecFactory(runtime.NewScheme()).UniversalDeserializer()
-```
