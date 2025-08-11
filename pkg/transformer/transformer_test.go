@@ -123,10 +123,9 @@ spec:
 		require.NoError(t, err)
 
 		require.NotNil(t, pod)
-		// Check if preferences applied: e.g., input device auto-attached
 		vmiJSON := ""
 		for _, env := range pod.Spec.Containers[0].Env {
-			if env.Name == "VMI_OBJ" {
+			if env.Name == "STANDALONE_VMI" {
 				vmiJSON = env.Value
 				break
 			}
@@ -137,9 +136,9 @@ spec:
 		err = json.Unmarshal([]byte(vmiJSON), &vmi)
 		require.NoError(t, err)
 
-		require.Len(t, vmi.Spec.Domain.Devices.Inputs, 1) // Auto-attached by preference
-		require.Equal(t, uint32(2), vmi.Spec.Domain.CPU.Guest) // From instancetype
-		require.Equal(t, "2Gi", vmi.Spec.Domain.Memory.Guest.String()) // From instancetype
+		require.Len(t, vmi.Spec.Domain.Devices.Inputs, 1)
+		require.Equal(t, uint32(2), vmi.Spec.Domain.CPU.Guest)
+		require.Equal(t, "2Gi", vmi.Spec.Domain.Memory.Guest.String())
 	})
 
 	t.Run("error on invalid files", func(t *testing.T) {
@@ -148,5 +147,61 @@ spec:
 		)
 		_, err := transformer.Transform("/fake/vm.yaml")
 		require.Error(t, err)
+	})
+}
+
+func TestTransformWithProxy(t *testing.T) {
+	t.Run("add console proxy sidecar", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+
+		tmpFile, err := ioutil.TempFile("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		transformer := NewVMToPodTransformer(WithAddConsoleProxy(true, "test-proxy-image", 8080))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		require.Len(t, pod.Spec.Containers, 2)
+		proxyContainer := pod.Spec.Containers[1]
+		require.Equal(t, "console-proxy", proxyContainer.Name)
+		require.Equal(t, "test-proxy-image", proxyContainer.Image)
+		require.Contains(t, proxyContainer.Command[0], "/console-proxy")
+		require.Contains(t, proxyContainer.Command[1], "-port=8080")
+
+		// Check STANDALONE_VMI in virt-launcher
+		vmiJSON := ""
+		for _, env := range pod.Spec.Containers[0].Env {
+			if env.Name == "STANDALONE_VMI" {
+				vmiJSON = env.Value
+				break
+			}
+		}
+		require.NotEmpty(t, vmiJSON)
+
+		var vmi v1.VirtualMachineInstance
+		err = json.Unmarshal([]byte(vmiJSON), &vmi)
+		require.NoError(t, err)
+		require.Equal(t, "testvm", vmi.Name)
+	})
+
+	t.Run("without proxy", func(t *testing.T) {
+		transformer := NewVMToPodTransformer()
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+		require.Len(t, pod.Spec.Containers, 1)
 	})
 }

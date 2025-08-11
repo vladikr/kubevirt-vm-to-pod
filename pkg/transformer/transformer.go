@@ -28,11 +28,14 @@ import (
 )
 
 type VMToPodTransformer struct {
-	ClusterConfig *virtconfig.ClusterConfig
-	TemplateSvc   services.TemplateService
-	LauncherImage string
-	InstancetypeFile string
-	PreferenceFile   string
+	ClusterConfig 		*virtconfig.ClusterConfig
+	TemplateSvc   		services.TemplateService
+	LauncherImage 		string
+	InstancetypeFile 	string
+	PreferenceFile   	string
+	AddConsoleProxy 	bool
+	ProxyImage      	string
+	ProxyPort       	int
 }
 
 type TransformerOption func(*VMToPodTransformer)
@@ -59,6 +62,14 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 	crdInformer, _ := testutils.NewFakeInformerFor(&extv1.CustomResourceDefinition{})
 	kvInformer, _ := testutils.NewFakeInformerFor(&virtv1.KubeVirt{})
 	config, _ := virtconfig.NewClusterConfig(crdInformer, kvInformer, "default")
+
+	enableFeatureGate := func(featureGate string) {
+        kvConfig := kv.DeepCopy()
+        kvConfig.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{featureGate}
+        testutils.UpdateFakeKubeVirtClusterConfig(kvStore, kvConfig)
+    }
+	enableFeatureGate(featuregate.ImageVolume)     
+
 
 	pvcCache := testutils.NewFakeIndexerFor(&v1.PersistentVolumeClaim{})
 	resourceQuotaStore := testutils.NewFakeStoreFor(&v1.ResourceQuota{})
@@ -136,7 +147,6 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*v1.Pod, error) {
 		return nil, fmt.Errorf("failed to set default network: %v", err)
 	}
 
-	// Call the defaults you moved back
 	util.SetDefaultVolumeDisk(&vmi.Spec)
 	autoAttachInputDevice(vmi)
 
@@ -145,18 +155,61 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*v1.Pod, error) {
 		return nil, fmt.Errorf("failed to render Pod: %v", err)
 	}
 
+	if t.AddConsoleProxy {
+		addConsoleProxySidecar(pod, t.ProxyImage, t.ProxyPort)
+	}
+
 	vmiJSON, err := json.Marshal(vmi)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal VMI: %v", err)
 	}
 	for i, c := range pod.Spec.Containers {
 		if c.Name == "compute" {
-			pod.Spec.Containers[i].Env = append(c.Env, v1.EnvVar{Name: "VMI_OBJ", Value: string(vmiJSON)})
+			pod.Spec.Containers[i].Env = append(c.Env, v1.EnvVar{Name: "STANDALONE_VMI", Value: string(vmiJSON)})
 			break
 		}
 	}
 
 	return pod, nil
+}
+
+func addConsoleProxySidecar(pod *k8sv1.Pod, proxyImage string, proxyPort int) {
+	// Shared volume for kubevirt-private
+	pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
+		Name: "kubevirt-private",
+		VolumeSource: k8sv1.VolumeSource{
+			EmptyDir: &k8sv1.EmptyDirVolumeSource{},
+		},
+	})
+
+	// Mount in virt-launcher
+	for i, c := range pod.Spec.Containers {
+		if c.Name == "virt-launcher" {
+			pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, k8sv1.VolumeMount{
+				Name:      "kubevirt-private",
+				MountPath: "/var/run/kubevirt-private",
+			})
+		}
+	}
+
+	// Add proxy as a sidecar
+	pod.Spec.Containers = append(pod.Spec.Containers, k8sv1.Container{
+		Name:    "console-proxy",
+		Image:   proxyImage,
+		Command: []string{"/proxy", fmt.Sprintf("-port=%d", proxyPort)},
+		Ports: []k8sv1.ContainerPort{
+			{ContainerPort: int32(proxyPort), Protocol: "TCP"},
+		},
+		VolumeMounts: []k8sv1.VolumeMount{
+			{Name: "kubevirt-private", MountPath: "/var/run/kubevirt-private"},
+		},
+		SecurityContext: &k8sv1.SecurityContext{
+			Capabilities: &k8sv1.Capabilities{Drop: []k8sv1.Capability{"ALL"}},
+		},
+	})
+
+	// Expose port on host
+	pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports = append(pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports, k8sv1.ContainerPort{HostPort: int32(proxyPort)})
 }
 
 func (t *VMToPodTransformer) applyInstancetypeAndPreferences(vm *virtv1.VirtualMachine) error {
