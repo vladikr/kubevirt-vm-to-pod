@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-
+	"encoding/json"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/yaml"
 
@@ -43,7 +43,7 @@ func main() {
 				transformer.WithLauncherImage(launcherImage),
 				transformer.WithInstancetypeFile(instancetypeFile),
 				transformer.WithPreferenceFile(preferenceFile),
-				transformer.WithAddConsoleProxy(addConsoleProxy, proxyImage, proxyPort),
+				//transformer.WithAddConsoleProxy(addConsoleProxy, proxyImage, proxyPort),
 			)
 			pod, err := t.Transform(vmFile)
 			if err != nil {
