@@ -5,34 +5,37 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	"k8s.io/api/core/v1"
+	k8sv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/client-go/testing"
-	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	virtv1 "kubevirt.io/api/core/v1"
-	instancetypev1beta1 "kubevirt.io/api/instancetype/v1beta1"
-	instancetypeVMWebhooks "kubevirt.io/kubevirt/pkg/instancetype/webhooks/vm"
 	"kubevirt.io/kubevirt/pkg/util"
 	"kubevirt.io/kubevirt/pkg/virt-api/webhooks/mutating-webhook/mutators"
 	"kubevirt.io/kubevirt/pkg/network/vmispec"
 	"kubevirt.io/kubevirt/pkg/testutils"
-	"kubevirt.io/kubevirt/pkg/virt-api/webhooks"
 	"kubevirt.io/kubevirt/pkg/virt-controller/services"
-	"kubevirt.io/kubevirt/pkg/virt-controller/watch"
+	vmCtrl "kubevirt.io/kubevirt/pkg/virt-controller/watch/vm"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/client-go/tools/cache"
+	"kubevirt.io/kubevirt/pkg/defaults"
+
+    extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+
 )
 
 type VMToPodTransformer struct {
-	ClusterConfig *virtconfig.ClusterConfig
-	TemplateSvc   services.TemplateService
-	LauncherImage string
-	InstancetypeFile string
-	PreferenceFile   string
+	ClusterConfig 		*virtconfig.ClusterConfig
+	TemplateSvc   		services.TemplateService
+	LauncherImage 		string
+	InstancetypeFile 	string
+	PreferenceFile   	string
+	AddConsoleProxy 	bool
+	ProxyImage      	string
+	ProxyPort       	int
 }
 
 type TransformerOption func(*VMToPodTransformer)
@@ -56,13 +59,32 @@ func WithPreferenceFile(file string) TransformerOption {
 }
 
 func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
+	kv := &virtv1.KubeVirt{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kubevirt",
+			Namespace: "kubevirt",
+		},
+		Spec: virtv1.KubeVirtSpec{
+			Configuration: virtv1.KubeVirtConfiguration{
+				DeveloperConfiguration: &virtv1.DeveloperConfiguration{},
+				VirtualMachineOptions: &virtv1.VirtualMachineOptions{
+					DisableSerialConsoleLog: &virtv1.DisableSerialConsoleLog{},
+				},
+			},
+		},
+		Status: virtv1.KubeVirtStatus{
+			Phase: virtv1.KubeVirtPhaseDeploying,
+		},
+	}
+	kv.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{"ImageVolume"}
+
 	crdInformer, _ := testutils.NewFakeInformerFor(&extv1.CustomResourceDefinition{})
-	kvInformer, _ := testutils.NewFakeInformerFor(&virtv1.KubeVirt{})
+	kvInformer, _ := testutils.NewFakeInformerFor(kv)
 	config, _ := virtconfig.NewClusterConfig(crdInformer, kvInformer, "default")
 
-	pvcCache := testutils.NewFakeIndexerFor(&v1.PersistentVolumeClaim{})
-	resourceQuotaStore := testutils.NewFakeStoreFor(&v1.ResourceQuota{})
-	namespaceStore := testutils.NewFakeStoreFor(&v1.Namespace{})
+    pvcCache := cache.NewIndexer(cache.DeletionHandlingMetaNamespaceKeyFunc, nil)
+    resourceQuotaStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
+    namespaceStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
 
 	launcherImage := "quay.io/kubevirt/virt-launcher:latest"
 
@@ -70,11 +92,10 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 		launcherImage,
 		240,
 		"/var/run/kubevirt",
-		"/var/lib/kubevirt",
 		"/var/run/kubevirt-ephemeral-disks",
 		"/var/run/kubevirt/container-disks",
 		virtv1.HotplugDiskDir,
-		"",
+		"pull-secret-1",
 		pvcCache,
 		nil,
 		config,
@@ -97,7 +118,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 	return t
 }
 
-func (t *VMToPodTransformer) Transform(vmFile string) (*v1.Pod, error) {
+func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 	data, err := ioutil.ReadFile(vmFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read VM file: %v", err)
@@ -112,20 +133,11 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*v1.Pod, error) {
 	}
 
 	// Apply VM defaults
-	if err := webhooks.SetDefaultVirtualMachine(t.ClusterConfig, vm); err != nil {
-		return nil, fmt.Errorf("failed to set VM defaults: %v", err)
-	}
+	defaults.SetVirtualMachineDefaults(vm, t.ClusterConfig, nil)
 
-	// Apply instancetypes/preferences if provided
-	if t.InstancetypeFile != "" || t.PreferenceFile != "" {
-		if err := t.applyInstancetypeAndPreferences(vm); err != nil {
-			return nil, err
-		}
-	}
+	vmi := vmCtrl.SetupVMIFromVM(vm)
 
-	vmi := watch.SetupVMIFromVM(vm)
-
-	if err := webhooks.SetDefaultVirtualMachineInstance(t.ClusterConfig, vmi); err != nil {
+	if err := defaults.SetDefaultVirtualMachineInstance(t.ClusterConfig, vmi); err != nil {
 		return nil, fmt.Errorf("failed to set VMI defaults: %v", err)
 	}
 	if err := mutators.ApplyNewVMIMutations(vmi, t.ClusterConfig); err != nil {
@@ -136,13 +148,22 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*v1.Pod, error) {
 		return nil, fmt.Errorf("failed to set default network: %v", err)
 	}
 
-	// Call the defaults you moved back
 	util.SetDefaultVolumeDisk(&vmi.Spec)
-	autoAttachInputDevice(vmi)
+	vmCtrl.AutoAttachInputDevice(vmi)
 
 	pod, err := t.TemplateSvc.RenderLaunchManifest(vmi)
 	if err != nil {
 		return nil, fmt.Errorf("failed to render Pod: %v", err)
+	}
+	
+	// add type
+	pod.TypeMeta = metav1.TypeMeta{
+        Kind:       "Pod",
+        APIVersion: "v1",
+    }
+
+	if t.AddConsoleProxy {
+		addConsoleProxySidecar(pod, t.ProxyImage, t.ProxyPort)
 	}
 
 	vmiJSON, err := json.Marshal(vmi)
@@ -151,7 +172,7 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*v1.Pod, error) {
 	}
 	for i, c := range pod.Spec.Containers {
 		if c.Name == "compute" {
-			pod.Spec.Containers[i].Env = append(c.Env, v1.EnvVar{Name: "VMI_OBJ", Value: string(vmiJSON)})
+			pod.Spec.Containers[i].Env = append(c.Env, k8sv1.EnvVar{Name: "STANDALONE_VMI", Value: string(vmiJSON)})
 			break
 		}
 	}
@@ -159,67 +180,43 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*v1.Pod, error) {
 	return pod, nil
 }
 
-func (t *VMToPodTransformer) applyInstancetypeAndPreferences(vm *virtv1.VirtualMachine) error {
-	fakeClient := fake.NewSimpleClientset()
-
-	if t.InstancetypeFile != "" {
-		instData, err := ioutil.ReadFile(t.InstancetypeFile)
-		if err != nil {
-			return err
-		}
-		inst := &instancetypev1beta1.VirtualMachineInstancetype{}
-		if err := yaml.Unmarshal(instData, inst); err != nil {
-			return err
-		}
-		fakeClient.Tracker.Add(inst)
-	}
-
-	if t.PreferenceFile != "" {
-		prefData, err := ioutil.ReadFile(t.PreferenceFile)
-		if err != nil {
-			return err
-		}
-		pref := &instancetypev1beta1.VirtualMachinePreference{}
-		if err := yaml.Unmarshal(prefData, pref); err != nil {
-			return err
-		}
-		fakeClient.Tracker.Add(pref)
-	}
-
-	mutator := instancetypeVMWebhooks.NewMutator(fakeClient)
-
-	vmJSON, err := json.Marshal(vm)
-	if err != nil {
-		return err
-	}
-
-	ar := &admissionv1.AdmissionReview{
-		Request: &admissionv1.AdmissionRequest{
-			Operation: admissionv1.Create,
-			Resource: metav1.GroupVersionResource{Group: virtv1.GroupName, Version: "v1", Resource: "virtualmachines"},
-			Object: runtime.RawExtension{Raw: vmJSON},
+func addConsoleProxySidecar(pod *k8sv1.Pod, proxyImage string, proxyPort int) {
+	// Shared volume for kubevirt-private
+	pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
+		Name: "kubevirt-private",
+		VolumeSource: k8sv1.VolumeSource{
+			EmptyDir: &k8sv1.EmptyDirVolumeSource{},
 		},
-	}
+	})
 
-	resp := mutator.Mutate(ar)
-	if resp.Allowed && len(resp.Patch) > 0 {
-		patcher := patch.NewPatcher(resp.PatchType, resp.Patch)
-		unstr := &unstructured.Unstructured{}
-		unstr.SetUnstructuredContent(map[string]interface{}{})
-		patched, err := patcher.Patch(unstr, codec)
-		if err != nil {
-			return err
-		}
-		patchedJSON, err := json.Marshal(patched)
-		if err != nil {
-			return err
-		}
-		if err := json.Unmarshal(patchedJSON, vm); err != nil {
-			return err
+	// Mount in virt-launcher
+	for i, c := range pod.Spec.Containers {
+		if c.Name == "virt-launcher" {
+			pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, k8sv1.VolumeMount{
+				Name:      "kubevirt-private",
+				MountPath: "/var/run/kubevirt-private",
+			})
 		}
 	}
 
-	return nil
+	// Add proxy as a sidecar
+	pod.Spec.Containers = append(pod.Spec.Containers, k8sv1.Container{
+		Name:    "console-proxy",
+		Image:   proxyImage,
+		Command: []string{"/proxy", fmt.Sprintf("-port=%d", proxyPort)},
+		Ports: []k8sv1.ContainerPort{
+			{ContainerPort: int32(proxyPort), Protocol: "TCP"},
+		},
+		VolumeMounts: []k8sv1.VolumeMount{
+			{Name: "kubevirt-private", MountPath: "/var/run/kubevirt-private"},
+		},
+		SecurityContext: &k8sv1.SecurityContext{
+			Capabilities: &k8sv1.Capabilities{Drop: []k8sv1.Capability{"ALL"}},
+		},
+	})
+
+	// Expose port on host
+	pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports = append(pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports, k8sv1.ContainerPort{HostPort: int32(proxyPort)})
 }
 
 var codec = serializer.NewCodecFactory(runtime.NewScheme()).UniversalDeserializer()

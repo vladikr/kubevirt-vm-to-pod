@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-
+	"encoding/json"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/yaml"
 
@@ -16,6 +16,9 @@ var (
 	launcherImage    string
 	instancetypeFile string
 	preferenceFile   string
+	addConsoleProxy  bool
+	proxyImage       string
+	proxyPort        int
 )
 
 func main() {
@@ -32,11 +35,15 @@ func main() {
 			if launcherImage == "" {
 				launcherImage = "quay.io/kubevirt/virt-launcher:latest"
 			}
+			if addConsoleProxy && proxyImage == "" {
+				proxyImage = "quay.io/vladikr/kubevirt-console-proxy:latest"
+			}
 
 			t := transformer.NewVMToPodTransformer(
 				transformer.WithLauncherImage(launcherImage),
 				transformer.WithInstancetypeFile(instancetypeFile),
 				transformer.WithPreferenceFile(preferenceFile),
+				//transformer.WithAddConsoleProxy(addConsoleProxy, proxyImage, proxyPort),
 			)
 			pod, err := t.Transform(vmFile)
 			if err != nil {
@@ -63,6 +70,9 @@ func main() {
 	rootCmd.Flags().StringVar(&launcherImage, "launcher-image", "", "Virt-launcher image (default: quay.io/kubevirt/virt-launcher:latest)")
 	rootCmd.Flags().StringVar(&instancetypeFile, "instancetype-file", "", "Path to Instancetype YAML file (optional)")
 	rootCmd.Flags().StringVar(&preferenceFile, "preference-file", "", "Path to Preference YAML file (optional)")
+	rootCmd.Flags().BoolVar(&addConsoleProxy, "add-console-proxy", false, "Add console proxy sidecar to the Pod")
+	rootCmd.Flags().StringVar(&proxyImage, "proxy-image", "", "Console proxy image (default: quay.io/vladikr/kubevirt-console-proxy:latest)")
+	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 8080, "Port for the console proxy to listen on")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
