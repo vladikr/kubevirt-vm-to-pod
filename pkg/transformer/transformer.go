@@ -29,7 +29,7 @@ import (
 
 type VMToPodTransformer struct {
 	ClusterConfig 		*virtconfig.ClusterConfig
-	TemplateSvc   		services.TemplateService
+	TemplateSvc   		*services.TemplateService
 	LauncherImage 		string
 	InstancetypeFile 	string
 	PreferenceFile   	string
@@ -55,6 +55,14 @@ func WithInstancetypeFile(file string) TransformerOption {
 func WithPreferenceFile(file string) TransformerOption {
 	return func(t *VMToPodTransformer) {
 		t.PreferenceFile = file
+	}
+}
+
+func WithAddConsoleProxy(enabled bool, image string, port int) TransformerOption {
+	return func(t *VMToPodTransformer) {
+		t.AddConsoleProxy = enabled
+		t.ProxyImage = image
+		t.ProxyPort = port
 	}
 }
 
