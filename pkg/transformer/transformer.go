@@ -37,6 +37,7 @@ type VMToPodTransformer struct {
 	ProxyImage      	string
 	ProxyPort       	int
 	ForcePasst      	bool
+	MountDevices    	bool
 }
 
 type TransformerOption func(*VMToPodTransformer)
@@ -70,6 +71,12 @@ func WithAddConsoleProxy(enabled bool, image string, port int) TransformerOption
 func WithForcePasst(enabled bool) TransformerOption {
 	return func(t *VMToPodTransformer) {
 		t.ForcePasst = enabled
+	}
+}
+
+func WithMountDevices(enabled bool) TransformerOption {
+	return func(t *VMToPodTransformer) {
+		t.MountDevices = enabled
 	}
 }
 
@@ -191,6 +198,10 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 		addConsoleProxySidecar(pod, t.ProxyImage, t.ProxyPort)
 	}
 
+	if t.MountDevices {
+		mountKVMDevices(pod)
+	}
+
 	vmiJSON, err := json.Marshal(vmi)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal VMI: %v", err)
@@ -242,6 +253,44 @@ func addConsoleProxySidecar(pod *k8sv1.Pod, proxyImage string, proxyPort int) {
 
 	// Expose port on host
 	pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports = append(pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports, k8sv1.ContainerPort{HostPort: int32(proxyPort)})
+}
+
+func mountKVMDevices(pod *k8sv1.Pod) {
+	// Add hostPath volumes for KVM devices
+	hostPathCharDev := k8sv1.HostPathCharDev
+
+	kvmDevices := []struct {
+		name string
+		path string
+	}{
+		{"kvm", "/dev/kvm"},
+		{"tun", "/dev/net/tun"},
+		{"vhost-net", "/dev/vhost-net"},
+	}
+
+	for _, dev := range kvmDevices {
+		// Add volume
+		pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
+			Name: dev.name,
+			VolumeSource: k8sv1.VolumeSource{
+				HostPath: &k8sv1.HostPathVolumeSource{
+					Path: dev.path,
+					Type: &hostPathCharDev,
+				},
+			},
+		})
+
+		// Mount in compute container
+		for i, c := range pod.Spec.Containers {
+			if c.Name == "compute" {
+				pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, k8sv1.VolumeMount{
+					Name:      dev.name,
+					MountPath: dev.path,
+				})
+				break
+			}
+		}
+	}
 }
 
 func forcePasstBinding(spec *virtv1.VirtualMachineInstanceSpec) {

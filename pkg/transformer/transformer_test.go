@@ -39,7 +39,8 @@ spec:
 		require.NoError(t, err)
 
 		require.NotNil(t, pod)
-		require.Equal(t, "virt-launcher-testvm-", pod.GenerateName)
+		require.Equal(t, "virt-launcher-testvm", pod.Name)
+		require.Empty(t, pod.GenerateName, "GenerateName should be empty for standalone pods")
 		require.Len(t, pod.Spec.Containers, 1) // Basic compute container
 	})
 

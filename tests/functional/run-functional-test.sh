@@ -53,9 +53,9 @@ if [ ! -f "$VM_FILE" ]; then
 fi
 
 # Step 2: Generate Pod YAML
-echo_info "Generating Pod YAML from VirtualMachine..."
+echo_info "Generating Pod YAML from VirtualMachine with device mounting..."
 cd "$REPO_ROOT"
-"$BINARY" --vm-file="$VM_FILE" > "$POD_YAML"
+"$BINARY" --vm-file="$VM_FILE" --mount-devices > "$POD_YAML"
 
 if [ ! -s "$POD_YAML" ]; then
     echo_error "Failed to generate Pod YAML"
@@ -73,6 +73,13 @@ if ! grep -q "STANDALONE_VMI" "$POD_YAML"; then
     echo_error "Pod YAML doesn't contain STANDALONE_VMI env var"
     exit 1
 fi
+
+if ! grep -q "/dev/kvm" "$POD_YAML"; then
+    echo_error "Pod YAML doesn't contain /dev/kvm device mount"
+    exit 1
+fi
+echo_success "KVM device mounts present"
+
 echo_success "Pod YAML validation passed"
 
 # Step 3: Start Pod with podman kube play
@@ -139,6 +146,19 @@ if podman exec "$CONTAINER_NAME" pgrep -f "virt-launcher" >/dev/null 2>&1; then
     echo_success "virt-launcher process found"
 else
     echo_error "virt-launcher process not running"
+fi
+
+# Step 7.5: Verify /dev/kvm device access
+echo_info "Verifying /dev/kvm device access..."
+if podman exec "$CONTAINER_NAME" test -e /dev/kvm 2>/dev/null; then
+    echo_success "/dev/kvm device is accessible in container"
+    if podman exec "$CONTAINER_NAME" test -r /dev/kvm && podman exec "$CONTAINER_NAME" test -w /dev/kvm 2>/dev/null; then
+        echo_success "/dev/kvm has read/write permissions"
+    else
+        echo_info "/dev/kvm exists but may not have proper permissions"
+    fi
+else
+    echo_error "/dev/kvm device not found in container"
 fi
 
 # Step 8: Check logs for successful boot indicators
