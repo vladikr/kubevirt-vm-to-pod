@@ -208,3 +208,180 @@ spec:
 		require.Len(t, pod.Spec.Containers, 1)
 	})
 }
+
+func TestForcePasst(t *testing.T) {
+	t.Run("force-passt replaces bindings", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-passt
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          interfaces:
+          - name: default
+            masquerade: {}
+          - name: eth1
+            bridge: {}
+      networks:
+      - name: default
+        pod: {}
+      - name: eth1
+        multus:
+          networkName: mynet
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm-passt.yaml")
+		require.NoError(t, err)
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+		defer os.Remove(tmpFile.Name())
+
+		transformer := NewVMToPodTransformer(WithForcePasst(true))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Extract STANDALONE_VMI
+		vmiJSON := ""
+		for _, env := range pod.Spec.Containers[0].Env {
+			if env.Name == "STANDALONE_VMI" {
+				vmiJSON = env.Value
+				break
+			}
+		}
+		require.NotEmpty(t, vmiJSON)
+
+		var vmi v1.VirtualMachineInstance
+		err = json.Unmarshal([]byte(vmiJSON), &vmi)
+		require.NoError(t, err)
+
+		// All interfaces should be Passt
+		require.Len(t, vmi.Spec.Domain.Devices.Interfaces, 2)
+		for _, iface := range vmi.Spec.Domain.Devices.Interfaces {
+			require.NotNil(t, iface.DeprecatedPasst, "Interface %s should have Passt binding", iface.Name)
+			require.Nil(t, iface.Masquerade, "Interface %s should not have Masquerade", iface.Name)
+			require.Nil(t, iface.Bridge, "Interface %s should not have Bridge", iface.Name)
+			require.Nil(t, iface.DeprecatedSlirp, "Interface %s should not have Slirp", iface.Name)
+		}
+
+		// Networks should be pod only
+		require.Len(t, vmi.Spec.Networks, 2)
+		for _, net := range vmi.Spec.Networks {
+			require.NotNil(t, net.Pod, "Network %s should be Pod network", net.Name)
+			require.Nil(t, net.Multus, "Network %s should not have Multus", net.Name)
+		}
+	})
+
+	t.Run("force-passt adds default network when missing", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-no-net
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          interfaces:
+          - name: eth0
+            bridge: {}
+      networks: []
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm-no-net.yaml")
+		require.NoError(t, err)
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+		defer os.Remove(tmpFile.Name())
+
+		transformer := NewVMToPodTransformer(WithForcePasst(true))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Extract STANDALONE_VMI
+		vmiJSON := ""
+		for _, env := range pod.Spec.Containers[0].Env {
+			if env.Name == "STANDALONE_VMI" {
+				vmiJSON = env.Value
+				break
+			}
+		}
+		require.NotEmpty(t, vmiJSON)
+
+		var vmi v1.VirtualMachineInstance
+		err = json.Unmarshal([]byte(vmiJSON), &vmi)
+		require.NoError(t, err)
+
+		// Should have default pod network added
+		require.GreaterOrEqual(t, len(vmi.Spec.Networks), 1)
+		foundDefault := false
+		for _, net := range vmi.Spec.Networks {
+			if net.Name == "default" && net.Pod != nil {
+				foundDefault = true
+				break
+			}
+		}
+		require.True(t, foundDefault, "Should have default pod network")
+
+		// All interfaces should be Passt
+		for _, iface := range vmi.Spec.Domain.Devices.Interfaces {
+			require.NotNil(t, iface.DeprecatedPasst, "Interface %s should have Passt binding", iface.Name)
+		}
+	})
+
+	t.Run("without force-passt preserves original bindings", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-orig
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+      - name: default
+        pod: {}
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm-orig.yaml")
+		require.NoError(t, err)
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+		defer os.Remove(tmpFile.Name())
+
+		transformer := NewVMToPodTransformer(WithForcePasst(false))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Extract STANDALONE_VMI
+		vmiJSON := ""
+		for _, env := range pod.Spec.Containers[0].Env {
+			if env.Name == "STANDALONE_VMI" {
+				vmiJSON = env.Value
+				break
+			}
+		}
+		require.NotEmpty(t, vmiJSON)
+
+		var vmi v1.VirtualMachineInstance
+		err = json.Unmarshal([]byte(vmiJSON), &vmi)
+		require.NoError(t, err)
+
+		// Should preserve original binding (masquerade)
+		require.Len(t, vmi.Spec.Domain.Devices.Interfaces, 1)
+		require.NotNil(t, vmi.Spec.Domain.Devices.Interfaces[0].Masquerade, "Should preserve Masquerade binding")
+		require.Nil(t, vmi.Spec.Domain.Devices.Interfaces[0].DeprecatedPasst, "Should not have Passt binding")
+	})
+}

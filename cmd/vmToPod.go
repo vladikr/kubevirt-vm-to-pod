@@ -19,6 +19,7 @@ var (
 	addConsoleProxy  bool
 	proxyImage       string
 	proxyPort        int
+	forcePasst       bool
 )
 
 func main() {
@@ -33,7 +34,7 @@ func main() {
 				return fmt.Errorf("output must be 'yaml' or 'json'")
 			}
 			if launcherImage == "" {
-				launcherImage = "quay.io/kubevirt/virt-launcher:latest"
+				launcherImage = "quay.io/kubevirt/virt-launcher:v1.7.0"
 			}
 			if addConsoleProxy && proxyImage == "" {
 				proxyImage = "quay.io/vladikr/kubevirt-console-proxy:latest"
@@ -44,6 +45,7 @@ func main() {
 				transformer.WithInstancetypeFile(instancetypeFile),
 				transformer.WithPreferenceFile(preferenceFile),
 				transformer.WithAddConsoleProxy(addConsoleProxy, proxyImage, proxyPort),
+				transformer.WithForcePasst(forcePasst),
 			)
 			pod, err := t.Transform(vmFile)
 			if err != nil {
@@ -67,12 +69,13 @@ func main() {
 
 	rootCmd.Flags().StringVar(&vmFile, "vm-file", "", "Path to VirtualMachine YAML file (required)")
 	rootCmd.Flags().StringVar(&output, "output", "yaml", "Output format: yaml or json")
-	rootCmd.Flags().StringVar(&launcherImage, "launcher-image", "", "Virt-launcher image (default: quay.io/kubevirt/virt-launcher:latest)")
+	rootCmd.Flags().StringVar(&launcherImage, "launcher-image", "", "Virt-launcher image (default: quay.io/kubevirt/virt-launcher:v1.7.0)")
 	rootCmd.Flags().StringVar(&instancetypeFile, "instancetype-file", "", "Path to Instancetype YAML file (optional)")
 	rootCmd.Flags().StringVar(&preferenceFile, "preference-file", "", "Path to Preference YAML file (optional)")
 	rootCmd.Flags().BoolVar(&addConsoleProxy, "add-console-proxy", false, "Add console proxy sidecar to the Pod")
 	rootCmd.Flags().StringVar(&proxyImage, "proxy-image", "", "Console proxy image (default: quay.io/vladikr/kubevirt-console-proxy:latest)")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 8080, "Port for the console proxy to listen on")
+	rootCmd.Flags().BoolVar(&forcePasst, "force-passt", false, "Force all network interfaces to use Passt binding")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

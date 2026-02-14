@@ -36,6 +36,7 @@ type VMToPodTransformer struct {
 	AddConsoleProxy 	bool
 	ProxyImage      	string
 	ProxyPort       	int
+	ForcePasst      	bool
 }
 
 type TransformerOption func(*VMToPodTransformer)
@@ -63,6 +64,12 @@ func WithAddConsoleProxy(enabled bool, image string, port int) TransformerOption
 		t.AddConsoleProxy = enabled
 		t.ProxyImage = image
 		t.ProxyPort = port
+	}
+}
+
+func WithForcePasst(enabled bool) TransformerOption {
+	return func(t *VMToPodTransformer) {
+		t.ForcePasst = enabled
 	}
 }
 
@@ -94,7 +101,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
     resourceQuotaStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
     namespaceStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
 
-	launcherImage := "quay.io/kubevirt/virt-launcher:latest"
+	launcherImage := "quay.io/kubevirt/virt-launcher:v1.7.0"
 
 	templateSvc := services.NewTemplateService(
 		launcherImage,
@@ -159,16 +166,26 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 	util.SetDefaultVolumeDisk(&vmi.Spec)
 	vmCtrl.AutoAttachInputDevice(vmi)
 
+	if t.ForcePasst {
+		forcePasstBinding(&vmi.Spec)
+	}
+
 	pod, err := t.TemplateSvc.RenderLaunchManifest(vmi)
 	if err != nil {
 		return nil, fmt.Errorf("failed to render Pod: %v", err)
 	}
-	
+
 	// add type
 	pod.TypeMeta = metav1.TypeMeta{
         Kind:       "Pod",
         APIVersion: "v1",
     }
+
+	// Convert generateName to name for standalone pods (required by podman kube play)
+	if pod.ObjectMeta.GenerateName != "" && pod.ObjectMeta.Name == "" {
+		pod.ObjectMeta.Name = pod.ObjectMeta.GenerateName[:len(pod.ObjectMeta.GenerateName)-1]
+		pod.ObjectMeta.GenerateName = ""
+	}
 
 	if t.AddConsoleProxy {
 		addConsoleProxySidecar(pod, t.ProxyImage, t.ProxyPort)
@@ -225,6 +242,72 @@ func addConsoleProxySidecar(pod *k8sv1.Pod, proxyImage string, proxyPort int) {
 
 	// Expose port on host
 	pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports = append(pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports, k8sv1.ContainerPort{HostPort: int32(proxyPort)})
+}
+
+func forcePasstBinding(spec *virtv1.VirtualMachineInstanceSpec) {
+	// Ensure at least one pod network
+	hasPodNetwork := false
+	for _, net := range spec.Networks {
+		if net.Pod != nil {
+			hasPodNetwork = true
+			break
+		}
+	}
+	if !hasPodNetwork {
+		// Add default pod network if none exists
+		spec.Networks = append([]virtv1.Network{virtv1.Network{
+			Name: "default",
+			NetworkSource: virtv1.NetworkSource{
+				Pod: &virtv1.PodNetwork{},
+			},
+		}}, spec.Networks...)
+	}
+
+	// Force all interfaces to Passt
+	for i := range spec.Domain.Devices.Interfaces {
+		iface := &spec.Domain.Devices.Interfaces[i]
+		iface.InterfaceBindingMethod = virtv1.InterfaceBindingMethod{
+			DeprecatedPasst: &virtv1.DeprecatedInterfacePasst{},
+		}
+		// Clear other bindings
+		iface.Masquerade = nil
+		iface.Bridge = nil
+		iface.DeprecatedSlirp = nil
+		iface.SRIOV = nil
+	}
+
+	// Match interfaces to pod networks
+	for i := range spec.Domain.Devices.Interfaces {
+		iface := &spec.Domain.Devices.Interfaces[i]
+		found := false
+		for j := range spec.Networks {
+			net := &spec.Networks[j]
+			if net.Name == iface.Name {
+				net.Pod = &virtv1.PodNetwork{}
+				net.Multus = nil
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Link to default pod network
+			iface.Name = "default"
+			// Check if default network already exists
+			defaultExists := false
+			for _, net := range spec.Networks {
+				if net.Name == "default" {
+					defaultExists = true
+					break
+				}
+			}
+			if !defaultExists {
+				spec.Networks = append(spec.Networks, virtv1.Network{
+					Name: "default",
+					NetworkSource: virtv1.NetworkSource{Pod: &virtv1.PodNetwork{}},
+				})
+			}
+		}
+	}
 }
 
 var codec = serializer.NewCodecFactory(runtime.NewScheme()).UniversalDeserializer()
