@@ -139,11 +139,23 @@ Without this flag, the Pod requests device plugin resources (`devices.kubevirt.i
 - `/dev/kvm` - KVM virtualization
 - `/dev/vhost-net` - vhost networking acceleration
 - `/dev/net/tun` - TUN/TAP devices for networking
+- **GPU devices** (auto-detected from VM spec):
+  - NVIDIA: `/dev/nvidia*`, `/dev/nvidiactl`, `/dev/nvidia-uvm`, etc.
+  - AMD/Intel: `/dev/dri/card*`, `/dev/dri/renderD*`
+- **PCI hostdevices**: `/dev/vfio/*` for device passthrough
 
 **When to use:**
 - ✅ Always use when running with Podman
 - ✅ When you want actual VM boot with KVM
+- ✅ When VM requests GPU passthrough
 - ❌ Not needed in Kubernetes (device plugins handle this)
+
+**GPU Support:**
+The `--mount-devices` flag automatically detects and mounts GPU devices from the VM spec:
+- Detects NVIDIA, AMD, and Intel GPUs from `deviceName` field
+- Mounts appropriate device files (`/dev/nvidia*`, `/dev/dri/*`)
+- Supports multiple GPUs per VM
+- See [GPU-SUPPORT.md](GPU-SUPPORT.md) for detailed documentation
 
 ### Force Passt (`--force-passt`)
 

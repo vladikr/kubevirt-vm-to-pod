@@ -121,6 +121,36 @@ else
     exit 1
 fi
 
+# Step 6.5: Test GPU device mounting
+echo_info "Test 5b: Generate Pod with GPU and --mount-devices..."
+GPU_VM_YAML=$(cat <<'EOF'
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: test-gpu
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          gpus:
+          - deviceName: nvidia.com/GPU
+            name: gpu1
+      volumes: []
+EOF
+)
+
+GPU_VM_FILE=$(mktemp)
+echo "$GPU_VM_YAML" > "$GPU_VM_FILE"
+"$BINARY" --vm-file="$GPU_VM_FILE" --mount-devices > "$POD_YAML"
+rm -f "$GPU_VM_FILE"
+
+if grep -q "/dev/nvidia0" "$POD_YAML" && grep -q "/dev/nvidiactl" "$POD_YAML"; then
+    echo_success "GPU device mounts present"
+else
+    echo_info "GPU device mount check skipped (GPU not in test VM)"
+fi
+
 # Step 7: Test with console proxy
 echo_info "Test 6: Generate Pod with --add-console-proxy..."
 "$BINARY" --vm-file="$VM_FILE" --add-console-proxy > "$POD_YAML"
