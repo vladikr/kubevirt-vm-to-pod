@@ -101,7 +101,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
     resourceQuotaStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
     namespaceStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
 
-	launcherImage := "quay.io/kubevirt/virt-launcher:latest"
+	launcherImage := "quay.io/kubevirt/virt-launcher:v1.7.0"
 
 	templateSvc := services.NewTemplateService(
 		launcherImage,
@@ -174,12 +174,18 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to render Pod: %v", err)
 	}
-	
+
 	// add type
 	pod.TypeMeta = metav1.TypeMeta{
         Kind:       "Pod",
         APIVersion: "v1",
     }
+
+	// Convert generateName to name for standalone pods (required by podman kube play)
+	if pod.ObjectMeta.GenerateName != "" && pod.ObjectMeta.Name == "" {
+		pod.ObjectMeta.Name = pod.ObjectMeta.GenerateName[:len(pod.ObjectMeta.GenerateName)-1]
+		pod.ObjectMeta.GenerateName = ""
+	}
 
 	if t.AddConsoleProxy {
 		addConsoleProxySidecar(pod, t.ProxyImage, t.ProxyPort)

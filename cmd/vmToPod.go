@@ -34,7 +34,7 @@ func main() {
 				return fmt.Errorf("output must be 'yaml' or 'json'")
 			}
 			if launcherImage == "" {
-				launcherImage = "quay.io/kubevirt/virt-launcher:latest"
+				launcherImage = "quay.io/kubevirt/virt-launcher:v1.7.0"
 			}
 			if addConsoleProxy && proxyImage == "" {
 				proxyImage = "quay.io/vladikr/kubevirt-console-proxy:latest"
@@ -69,7 +69,7 @@ func main() {
 
 	rootCmd.Flags().StringVar(&vmFile, "vm-file", "", "Path to VirtualMachine YAML file (required)")
 	rootCmd.Flags().StringVar(&output, "output", "yaml", "Output format: yaml or json")
-	rootCmd.Flags().StringVar(&launcherImage, "launcher-image", "", "Virt-launcher image (default: quay.io/kubevirt/virt-launcher:latest)")
+	rootCmd.Flags().StringVar(&launcherImage, "launcher-image", "", "Virt-launcher image (default: quay.io/kubevirt/virt-launcher:v1.7.0)")
 	rootCmd.Flags().StringVar(&instancetypeFile, "instancetype-file", "", "Path to Instancetype YAML file (optional)")
 	rootCmd.Flags().StringVar(&preferenceFile, "preference-file", "", "Path to Preference YAML file (optional)")
 	rootCmd.Flags().BoolVar(&addConsoleProxy, "add-console-proxy", false, "Add console proxy sidecar to the Pod")

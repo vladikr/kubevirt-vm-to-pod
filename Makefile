@@ -11,7 +11,7 @@ GO_TEST_FLAGS ?= -v -race
 
 DEV_MODE ?= false  # Set to true for dev builds (dynamically replaces KubeVirt dep with main branch)
 
-.PHONY: all build test podman-build podman-build-dev podman-push clean build-proxy podman-build-proxy podman-push-proxy
+.PHONY: all build test podman-build podman-build-dev podman-push clean build-proxy podman-build-proxy podman-push-proxy functional-test functional-test-proxy functional-test-quick functional-test-all
 
 all: build test build-proxy
 
@@ -42,3 +42,19 @@ podman-build-proxy:
 
 podman-push-proxy: podman-build-proxy
 	podman push $(PODMAN_REPO)-proxy:$(PODMAN_TAG)
+
+# Functional tests
+functional-test-quick: build
+	@echo "Running quick functional tests..."
+	./tests/functional/run-quick-test.sh
+
+functional-test: build
+	@echo "Running functional test with podman kube play..."
+	./tests/functional/run-functional-test.sh
+
+functional-test-proxy: build
+	@echo "Running functional test with console proxy..."
+	./tests/functional/run-console-proxy-test.sh
+
+functional-test-all: functional-test functional-test-proxy
+	@echo "All functional tests completed successfully!"
