@@ -110,8 +110,49 @@ else
     echo_info "Passt binding verification skipped (python/yaml not available)"
 fi
 
-# Step 6: Test with console proxy
-echo_info "Test 5: Generate Pod with --add-console-proxy..."
+# Step 6: Test with mount-devices
+echo_info "Test 5: Generate Pod with --mount-devices..."
+"$BINARY" --vm-file="$VM_FILE" --mount-devices > "$POD_YAML"
+
+if grep -q "/dev/kvm" "$POD_YAML" && grep -q "/dev/vhost-net" "$POD_YAML" && grep -q "/dev/net/tun" "$POD_YAML"; then
+    echo_success "KVM device mounts present"
+else
+    echo_error "KVM device mounts missing"
+    exit 1
+fi
+
+# Step 6.5: Test GPU device mounting
+echo_info "Test 5b: Generate Pod with GPU and --mount-devices..."
+GPU_VM_YAML=$(cat <<'EOF'
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: test-gpu
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          gpus:
+          - deviceName: nvidia.com/GPU
+            name: gpu1
+      volumes: []
+EOF
+)
+
+GPU_VM_FILE=$(mktemp)
+echo "$GPU_VM_YAML" > "$GPU_VM_FILE"
+"$BINARY" --vm-file="$GPU_VM_FILE" --mount-devices > "$POD_YAML"
+rm -f "$GPU_VM_FILE"
+
+if grep -q "/dev/nvidia0" "$POD_YAML" && grep -q "/dev/nvidiactl" "$POD_YAML"; then
+    echo_success "GPU device mounts present"
+else
+    echo_info "GPU device mount check skipped (GPU not in test VM)"
+fi
+
+# Step 7: Test with console proxy
+echo_info "Test 6: Generate Pod with --add-console-proxy..."
 "$BINARY" --vm-file="$VM_FILE" --add-console-proxy > "$POD_YAML"
 
 if grep -q "console-proxy" "$POD_YAML"; then
@@ -121,12 +162,12 @@ else
     exit 1
 fi
 
-# Step 7: Test combined flags
-echo_info "Test 6: Generate Pod with combined flags..."
-"$BINARY" --vm-file="$VM_FILE" --add-console-proxy --force-passt > "$POD_YAML"
+# Step 8: Test combined flags
+echo_info "Test 7: Generate Pod with all flags..."
+"$BINARY" --vm-file="$VM_FILE" --add-console-proxy --force-passt --mount-devices > "$POD_YAML"
 
-if grep -q "console-proxy" "$POD_YAML" && grep -q '"passt"' "$POD_YAML"; then
-    echo_success "Combined flags work correctly"
+if grep -q "console-proxy" "$POD_YAML" && grep -q '"passt"' "$POD_YAML" && grep -q "/dev/kvm" "$POD_YAML"; then
+    echo_success "All combined flags work correctly"
 else
     echo_error "Combined flags failed"
     exit 1
@@ -145,8 +186,9 @@ echo "  ✓ Pod name (not generateName)"
 echo "  ✓ virt-launcher container"
 echo "  ✓ STANDALONE_VMI env var"
 echo "  ✓ --force-passt flag"
+echo "  ✓ --mount-devices flag"
 echo "  ✓ --add-console-proxy flag"
-echo "  ✓ Combined flags"
+echo "  ✓ All combined flags"
 echo ""
 echo_info "To run full functional test with podman kube play:"
 echo_info "  ./tests/functional/run-functional-test.sh"

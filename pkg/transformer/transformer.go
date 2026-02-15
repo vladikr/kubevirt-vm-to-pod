@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"os"
+	"strings"
 
 	k8sv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -37,6 +39,7 @@ type VMToPodTransformer struct {
 	ProxyImage      	string
 	ProxyPort       	int
 	ForcePasst      	bool
+	MountDevices    	bool
 }
 
 type TransformerOption func(*VMToPodTransformer)
@@ -70,6 +73,12 @@ func WithAddConsoleProxy(enabled bool, image string, port int) TransformerOption
 func WithForcePasst(enabled bool) TransformerOption {
 	return func(t *VMToPodTransformer) {
 		t.ForcePasst = enabled
+	}
+}
+
+func WithMountDevices(enabled bool) TransformerOption {
+	return func(t *VMToPodTransformer) {
+		t.MountDevices = enabled
 	}
 }
 
@@ -191,6 +200,10 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 		addConsoleProxySidecar(pod, t.ProxyImage, t.ProxyPort)
 	}
 
+	if t.MountDevices {
+		mountHostDevices(pod, vmi)
+	}
+
 	vmiJSON, err := json.Marshal(vmi)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal VMI: %v", err)
@@ -242,6 +255,113 @@ func addConsoleProxySidecar(pod *k8sv1.Pod, proxyImage string, proxyPort int) {
 
 	// Expose port on host
 	pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports = append(pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports, k8sv1.ContainerPort{HostPort: int32(proxyPort)})
+}
+
+func mountHostDevices(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
+	hostPathCharDev := k8sv1.HostPathCharDev
+
+	// Always mount KVM devices
+	kvmDevices := []struct {
+		name string
+		path string
+	}{
+		{"kvm", "/dev/kvm"},
+		{"tun", "/dev/net/tun"},
+		{"vhost-net", "/dev/vhost-net"},
+	}
+
+	for _, dev := range kvmDevices {
+		mountDevice(pod, dev.name, dev.path, &hostPathCharDev)
+	}
+
+	// Mount GPU devices if requested in VMI
+	if vmi != nil && vmi.Spec.Domain.Devices.GPUs != nil {
+		for i, gpu := range vmi.Spec.Domain.Devices.GPUs {
+			// Detect vendor from deviceName
+			vendor := detectGPUVendor(gpu.DeviceName)
+
+			switch vendor {
+			case "nvidia":
+				// Mount NVIDIA GPU devices
+				// Primary GPU device (nvidia0, nvidia1, etc.)
+				mountDevice(pod, fmt.Sprintf("nvidia%d", i), fmt.Sprintf("/dev/nvidia%d", i), &hostPathCharDev)
+
+				// Control devices (only mount once, not per GPU)
+				if i == 0 {
+					mountDevice(pod, "nvidiactl", "/dev/nvidiactl", &hostPathCharDev)
+					mountDevice(pod, "nvidia-uvm", "/dev/nvidia-uvm", &hostPathCharDev)
+					mountDevice(pod, "nvidia-uvm-tools", "/dev/nvidia-uvm-tools", &hostPathCharDev)
+					mountDevice(pod, "nvidia-modeset", "/dev/nvidia-modeset", &hostPathCharDev)
+				}
+
+			case "amd", "intel":
+				// Mount DRI devices for AMD/Intel GPUs
+				// These use /dev/dri/card* and /dev/dri/renderD*
+				mountDevice(pod, fmt.Sprintf("dri-card%d", i), fmt.Sprintf("/dev/dri/card%d", i), &hostPathCharDev)
+				mountDevice(pod, fmt.Sprintf("dri-render%d", i), fmt.Sprintf("/dev/dri/renderD%d", 128+i), &hostPathCharDev)
+
+			default:
+				// Generic GPU - try to mount common devices
+				fmt.Fprintf(os.Stderr, "Warning: Unknown GPU vendor for device %s, mounting generic DRI devices\n", gpu.DeviceName)
+				mountDevice(pod, fmt.Sprintf("dri-card%d", i), fmt.Sprintf("/dev/dri/card%d", i), &hostPathCharDev)
+			}
+		}
+	}
+
+	// Mount PCI hostdevices if requested in VMI
+	if vmi != nil && vmi.Spec.Domain.Devices.HostDevices != nil {
+		for i, hostdev := range vmi.Spec.Domain.Devices.HostDevices {
+			// For PCI hostdevices, we need to mount the vfio device
+			// Format: /dev/vfio/X where X is the IOMMU group number
+			// This is complex and requires parsing PCI addresses
+			fmt.Fprintf(os.Stderr, "Warning: PCI hostdevice %s detected. Mounting /dev/vfio/* requires manual configuration\n", hostdev.Name)
+
+			// Mount vfio devices (common for SR-IOV and GPU passthrough)
+			if i == 0 {
+				// Mount /dev/vfio/vfio (VFIO container)
+				mountDevice(pod, "vfio", "/dev/vfio/vfio", &hostPathCharDev)
+			}
+		}
+	}
+}
+
+func mountDevice(pod *k8sv1.Pod, volumeName, devicePath string, pathType *k8sv1.HostPathType) {
+	// Add volume
+	pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
+		Name: volumeName,
+		VolumeSource: k8sv1.VolumeSource{
+			HostPath: &k8sv1.HostPathVolumeSource{
+				Path: devicePath,
+				Type: pathType,
+			},
+		},
+	})
+
+	// Mount in compute container
+	for i, c := range pod.Spec.Containers {
+		if c.Name == "compute" {
+			pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, k8sv1.VolumeMount{
+				Name:      volumeName,
+				MountPath: devicePath,
+			})
+			break
+		}
+	}
+}
+
+func detectGPUVendor(deviceName string) string {
+	deviceLower := strings.ToLower(deviceName)
+
+	if strings.Contains(deviceLower, "nvidia") {
+		return "nvidia"
+	}
+	if strings.Contains(deviceLower, "amd") || strings.Contains(deviceLower, "radeon") {
+		return "amd"
+	}
+	if strings.Contains(deviceLower, "intel") {
+		return "intel"
+	}
+	return "unknown"
 }
 
 func forcePasstBinding(spec *virtv1.VirtualMachineInstanceSpec) {

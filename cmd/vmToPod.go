@@ -20,6 +20,7 @@ var (
 	proxyImage       string
 	proxyPort        int
 	forcePasst       bool
+	mountDevices     bool
 )
 
 func main() {
@@ -46,6 +47,7 @@ func main() {
 				transformer.WithPreferenceFile(preferenceFile),
 				transformer.WithAddConsoleProxy(addConsoleProxy, proxyImage, proxyPort),
 				transformer.WithForcePasst(forcePasst),
+				transformer.WithMountDevices(mountDevices),
 			)
 			pod, err := t.Transform(vmFile)
 			if err != nil {
@@ -76,6 +78,7 @@ func main() {
 	rootCmd.Flags().StringVar(&proxyImage, "proxy-image", "", "Console proxy image (default: quay.io/vladikr/kubevirt-console-proxy:latest)")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 8080, "Port for the console proxy to listen on")
 	rootCmd.Flags().BoolVar(&forcePasst, "force-passt", false, "Force all network interfaces to use Passt binding")
+	rootCmd.Flags().BoolVar(&mountDevices, "mount-devices", false, "Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

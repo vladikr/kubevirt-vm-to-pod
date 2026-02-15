@@ -48,10 +48,10 @@ if [ ! -f "$BINARY" ]; then
     echo_success "Binary built successfully"
 fi
 
-# Step 2: Generate Pod YAML with console proxy and force-passt
-echo_info "Generating Pod YAML with console proxy and force-passt..."
+# Step 2: Generate Pod YAML with console proxy, force-passt, and device mounting
+echo_info "Generating Pod YAML with console proxy, force-passt, and device mounting..."
 cd "$REPO_ROOT"
-"$BINARY" --vm-file="$VM_FILE" --add-console-proxy --force-passt > "$POD_YAML"
+"$BINARY" --vm-file="$VM_FILE" --add-console-proxy --force-passt --mount-devices > "$POD_YAML"
 
 if [ ! -s "$POD_YAML" ]; then
     echo_error "Failed to generate Pod YAML"
