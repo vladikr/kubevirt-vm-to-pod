@@ -110,7 +110,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
     resourceQuotaStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
     namespaceStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
 
-	launcherImage := "quay.io/kubevirt/virt-launcher:v1.7.0"
+	launcherImage := "quay.io/kubevirt/virt-launcher:v1.8.0"
 
 	templateSvc := services.NewTemplateService(
 		launcherImage,
@@ -203,6 +203,8 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 	if t.MountDevices {
 		mountHostDevices(pod, vmi)
 	}
+
+	cleanupForStandalone(pod, vmi)
 
 	vmiJSON, err := json.Marshal(vmi)
 	if err != nil {
@@ -427,6 +429,25 @@ func forcePasstBinding(spec *virtv1.VirtualMachineInstanceSpec) {
 				})
 			}
 		}
+	}
+}
+
+func cleanupForStandalone(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
+	// Remove Kubernetes-specific node selectors that don't apply to standalone execution
+	if pod.Spec.NodeSelector != nil {
+		delete(pod.Spec.NodeSelector, virtv1.CPUManager)
+		delete(pod.Spec.NodeSelector, virtv1.DeprecatedCPUManager)
+		if len(pod.Spec.NodeSelector) == 0 {
+			pod.Spec.NodeSelector = nil
+		}
+	}
+
+	// Warn about dedicated CPU placement — CPU pinning must be configured
+	// at the container runtime level (e.g., podman --cpuset-cpus)
+	if vmi.Spec.Domain.CPU != nil && vmi.Spec.Domain.CPU.DedicatedCPUPlacement {
+		fmt.Fprintf(os.Stderr, "Warning: VM requests dedicatedCpuPlacement. "+
+			"For standalone execution, configure CPU pinning via the container runtime "+
+			"(e.g., podman run --cpuset-cpus=0-3)\n")
 	}
 }
 
