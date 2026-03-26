@@ -1,4 +1,4 @@
-FROM golang:1.23 AS builder
+FROM golang:1.24 AS builder
 
 ARG dev_mode=false
 WORKDIR /workspace
@@ -13,11 +13,11 @@ RUN if [ "$dev_mode" = "true" ]; then \
     fi
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o console-proxy ./pkg/transformer/proxy.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o console-proxy ./cmd/proxy && \
+    chmod 755 console-proxy
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/console-proxy .
-USER 65532:65532
 
 ENTRYPOINT ["/console-proxy"]
