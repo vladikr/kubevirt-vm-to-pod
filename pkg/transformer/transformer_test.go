@@ -263,7 +263,7 @@ spec:
 		// All interfaces should be Passt
 		require.Len(t, vmi.Spec.Domain.Devices.Interfaces, 2)
 		for _, iface := range vmi.Spec.Domain.Devices.Interfaces {
-			require.NotNil(t, iface.DeprecatedPasst, "Interface %s should have Passt binding", iface.Name)
+			require.NotNil(t, iface.PasstBinding, "Interface %s should have Passt binding", iface.Name)
 			require.Nil(t, iface.Masquerade, "Interface %s should not have Masquerade", iface.Name)
 			require.Nil(t, iface.Bridge, "Interface %s should not have Bridge", iface.Name)
 			require.Nil(t, iface.DeprecatedSlirp, "Interface %s should not have Slirp", iface.Name)
@@ -332,7 +332,7 @@ spec:
 
 		// All interfaces should be Passt
 		for _, iface := range vmi.Spec.Domain.Devices.Interfaces {
-			require.NotNil(t, iface.DeprecatedPasst, "Interface %s should have Passt binding", iface.Name)
+			require.NotNil(t, iface.PasstBinding, "Interface %s should have Passt binding", iface.Name)
 		}
 	})
 
@@ -383,6 +383,6 @@ spec:
 		// Should preserve original binding (masquerade)
 		require.Len(t, vmi.Spec.Domain.Devices.Interfaces, 1)
 		require.NotNil(t, vmi.Spec.Domain.Devices.Interfaces[0].Masquerade, "Should preserve Masquerade binding")
-		require.Nil(t, vmi.Spec.Domain.Devices.Interfaces[0].DeprecatedPasst, "Should not have Passt binding")
+		require.Nil(t, vmi.Spec.Domain.Devices.Interfaces[0].PasstBinding, "Should not have Passt binding")
 	})
 }
