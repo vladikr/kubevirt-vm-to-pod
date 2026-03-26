@@ -10,7 +10,7 @@ Convert KubeVirt VirtualMachine definitions into standalone Pods that can run ou
 - ✅ Converts VM to standalone Pod YAML
 - ✅ Supports Instancetype and Preference expansion
 - ✅ Optional console proxy sidecar for VM access
-- ✅ Force Passt network binding for standalone execution
+- ✅ Passt network binding by default for standalone execution
 - ✅ Mount KVM devices for hardware virtualization
 - ✅ Compatible with Podman kube play
 - ✅ Uses KubeVirt v1.8.0 APIs
@@ -65,7 +65,7 @@ podman logs <pod-name>-compute
 |------|-------------|---------|
 | `--vm-file` | Path to VirtualMachine YAML file | **(required)** |
 | `--mount-devices` | Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution | `false` |
-| `--force-passt` | Force all network interfaces to use Passt binding | `false` |
+| `--no-passt` | Preserve original network bindings instead of converting to Passt (requires CNI plugins) | `false` |
 | `--add-console-proxy` | Add console proxy sidecar to the Pod | `false` |
 | `--launcher-image` | Virt-launcher container image | `quay.io/kubevirt/virt-launcher:v1.8.0` |
 | `--instancetype-file` | Path to VirtualMachineInstancetype YAML file (optional) | - |
@@ -98,22 +98,30 @@ podman kube play pod.yaml
   > pod.yaml
 ```
 
-### 3. VM with Console Proxy and Passt Networking
+### 3. VM with Console Proxy
 
 ```bash
 ./kubevirt-vm-to-pod \
   --vm-file=myvm.yaml \
   --add-console-proxy \
-  --force-passt \
   --mount-devices \
   > pod.yaml
 
-# Access console proxy on port 8080
 podman kube play pod.yaml
-curl http://localhost:8080/console
 ```
 
-### 4. VM with All Features
+### 4. VM with Original Network Bindings (CNI plugins required)
+
+```bash
+# Preserve masquerade/bridge/multus bindings — requires CNI plugins configured for Podman
+./kubevirt-vm-to-pod \
+  --vm-file=myvm.yaml \
+  --no-passt \
+  --mount-devices \
+  > pod.yaml
+```
+
+### 5. VM with All Features
 
 ```bash
 ./kubevirt-vm-to-pod \
@@ -121,7 +129,6 @@ curl http://localhost:8080/console
   --instancetype-file=instancetype.yaml \
   --preference-file=preference.yaml \
   --add-console-proxy \
-  --force-passt \
   --mount-devices \
   --launcher-image=quay.io/kubevirt/virt-launcher:v1.8.0 \
   > pod.yaml
@@ -157,16 +164,13 @@ The `--mount-devices` flag automatically detects and mounts GPU devices from the
 - Supports multiple GPUs per VM
 - See [GPU-SUPPORT.md](GPU-SUPPORT.md) for detailed documentation
 
-### Force Passt (`--force-passt`)
+### Passt Networking (default)
 
-Converts all network interface bindings to Passt and all networks to Pod networks.
+By default, all network interface bindings are converted to Passt and all networks to Pod networks. Passt works out of the box with Podman without any CNI plugin configuration.
 
-**Use cases:**
-- Convert VMs with Multus/bridge networking to pod networking
-- Ensure compatibility with standalone execution
-- Simplify networking for local testing
+Use `--no-passt` to preserve the original bindings if you have CNI plugins configured for Podman.
 
-**Example transformation:**
+**Example transformation (default behavior):**
 ```yaml
 # Before
 interfaces:
@@ -337,7 +341,7 @@ VirtualMachine YAML
    [Pod Rendering]
         ↓
  [Optional: Console Proxy]
- [Optional: Force Passt]
+ [Passt Networking (default)]
  [Optional: Device Mounts]
         ↓
     Pod YAML
@@ -394,7 +398,7 @@ sudo chmod 666 /dev/kvm  # or add user to kvm group
 
 **Issue:** Multus networks require CNI configuration not available in Podman
 
-**Solution:** Use `--force-passt` to convert to pod networking
+**Solution:** Passt is now the default. If you used `--no-passt`, remove it to let the tool convert bindings automatically
 
 ## Contributing
 
