@@ -387,7 +387,7 @@ func forcePasstBinding(spec *virtv1.VirtualMachineInstanceSpec) {
 	for i := range spec.Domain.Devices.Interfaces {
 		iface := &spec.Domain.Devices.Interfaces[i]
 		iface.InterfaceBindingMethod = virtv1.InterfaceBindingMethod{
-			DeprecatedPasst: &virtv1.DeprecatedInterfacePasst{},
+			PasstBinding: &virtv1.InterfacePasstBinding{},
 		}
 		// Clear other bindings
 		iface.Masquerade = nil
