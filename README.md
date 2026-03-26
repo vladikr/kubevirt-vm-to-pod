@@ -13,7 +13,7 @@ Convert KubeVirt VirtualMachine definitions into standalone Pods that can run ou
 - ✅ Force Passt network binding for standalone execution
 - ✅ Mount KVM devices for hardware virtualization
 - ✅ Compatible with Podman kube play
-- ✅ Uses KubeVirt v1.7.0 APIs
+- ✅ Uses KubeVirt v1.8.0 APIs
 
 ## Installation
 
@@ -67,7 +67,7 @@ podman logs <pod-name>-compute
 | `--mount-devices` | Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution | `false` |
 | `--force-passt` | Force all network interfaces to use Passt binding | `false` |
 | `--add-console-proxy` | Add console proxy sidecar to the Pod | `false` |
-| `--launcher-image` | Virt-launcher container image | `quay.io/kubevirt/virt-launcher:v1.7.0` |
+| `--launcher-image` | Virt-launcher container image | `quay.io/kubevirt/virt-launcher:v1.8.0` |
 | `--instancetype-file` | Path to VirtualMachineInstancetype YAML file (optional) | - |
 | `--preference-file` | Path to VirtualMachinePreference YAML file (optional) | - |
 | `--proxy-image` | Console proxy container image | `quay.io/vladikr/kubevirt-console-proxy:latest` |
@@ -123,7 +123,7 @@ curl http://localhost:8080/console
   --add-console-proxy \
   --force-passt \
   --mount-devices \
-  --launcher-image=quay.io/kubevirt/virt-launcher:v1.7.0 \
+  --launcher-image=quay.io/kubevirt/virt-launcher:v1.8.0 \
   > pod.yaml
 ```
 
@@ -184,9 +184,9 @@ networks:
 # After (with --force-passt)
 interfaces:
   - name: default
-    passt: {}
+    passtBinding: {}
   - name: net1
-    passt: {}
+    passtBinding: {}
 networks:
   - name: default
     pod: {}
@@ -349,8 +349,8 @@ VirtualMachine YAML
 
 ## Compatibility
 
-- **KubeVirt Version**: v1.7.0
-- **Kubernetes APIs**: v0.33.5
+- **KubeVirt Version**: v1.8.0
+- **Kubernetes APIs**: v0.34.2
 - **Container Runtime**: Podman 4.x+, Docker (experimental)
 - **Host OS**: Linux with KVM support (for full VM boot)
 
@@ -360,6 +360,7 @@ VirtualMachine YAML
 - **No KubeVirt controllers**: No automatic reconciliation or state management
 - **Limited networking**: Best with pod networking or Passt binding
 - **Device access**: Requires `/dev/kvm` access on host for hardware virtualization
+- **Dedicated CPUs**: VMs with `dedicatedCpuPlacement` need manual CPU pinning via container runtime (e.g., `podman run --cpuset-cpus`)
 - **Podman specific**: Some features optimized for Podman kube play
 
 ## Troubleshooting
