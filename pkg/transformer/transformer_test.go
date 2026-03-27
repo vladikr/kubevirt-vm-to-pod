@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	k8sv1 "k8s.io/api/core/v1"
 	v1 "kubevirt.io/api/core/v1"
 )
 
@@ -41,7 +42,7 @@ spec:
 		require.NotNil(t, pod)
 		require.Equal(t, "virt-launcher-testvm", pod.Name)
 		require.Empty(t, pod.GenerateName, "GenerateName should be empty for standalone pods")
-		require.Len(t, pod.Spec.Containers, 1) // Basic compute container
+		require.Len(t, pod.Spec.Containers, 1) // compute only (ImageVolume mode)
 	})
 
 	t.Run("with instancetype and preference", func(t *testing.T) {
@@ -160,12 +161,19 @@ spec:
 		pod, err := transformer.Transform(tmpFile.Name())
 		require.NoError(t, err)
 
-		require.Len(t, pod.Spec.Containers, 2)
-		proxyContainer := pod.Spec.Containers[1]
+		require.Len(t, pod.Spec.Containers, 2) // compute + console-proxy
+		var proxyContainer k8sv1.Container
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "console-proxy" {
+				proxyContainer = c
+				break
+			}
+		}
 		require.Equal(t, "console-proxy", proxyContainer.Name)
 		require.Equal(t, "test-proxy-image", proxyContainer.Image)
-		require.Contains(t, proxyContainer.Command[0], "/proxy")
+		require.Contains(t, proxyContainer.Command[0], "/console-proxy")
 		require.Contains(t, proxyContainer.Command[1], "-port=8080")
+		require.Contains(t, proxyContainer.Command[2], "-listen=unix")
 
 		// Check STANDALONE_VMI in virt-launcher
 		vmiJSON := ""
@@ -206,7 +214,7 @@ spec:
 		transformer := NewVMToPodTransformer()
 		pod, err := transformer.Transform(tmpFile.Name())
 		require.NoError(t, err)
-		require.Len(t, pod.Spec.Containers, 1)
+		require.Len(t, pod.Spec.Containers, 1) // compute only
 	})
 }
 

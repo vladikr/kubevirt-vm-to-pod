@@ -23,7 +23,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"kubevirt.io/kubevirt/pkg/defaults"
 
-    extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 
@@ -102,9 +101,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 	}
 	kv.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{"ImageVolume"}
 
-	crdInformer, _ := testutils.NewFakeInformerFor(&extv1.CustomResourceDefinition{})
-	kvInformer, _ := testutils.NewFakeInformerFor(kv)
-	config, _ := virtconfig.NewClusterConfig(crdInformer, kvInformer, "default")
+	config, _, _ := testutils.NewFakeClusterConfigUsingKV(kv)
 
     pvcCache := cache.NewIndexer(cache.DeletionHandlingMetaNamespaceKeyFunc, nil)
     resourceQuotaStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
@@ -206,13 +203,20 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 
 	cleanupForStandalone(pod, vmi)
 
+	// Populate VMI interface status with PodInterfaceName.
+	// In Kubernetes, virt-handler sets this; for standalone mode we must do it ourselves.
+	populateInterfaceStatus(vmi)
+
 	vmiJSON, err := json.Marshal(vmi)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal VMI: %v", err)
 	}
 	for i, c := range pod.Spec.Containers {
 		if c.Name == "compute" {
-			pod.Spec.Containers[i].Env = append(c.Env, k8sv1.EnvVar{Name: "STANDALONE_VMI", Value: string(vmiJSON)})
+			pod.Spec.Containers[i].Env = append(c.Env,
+				k8sv1.EnvVar{Name: "STANDALONE_VMI", Value: string(vmiJSON)},
+				k8sv1.EnvVar{Name: "VIRSH_DEFAULT_CONNECT_URI", Value: "qemu+unix:///session?socket=/var/run/libvirt/virtqemud-sock"},
+			)
 			break
 		}
 	}
@@ -221,42 +225,27 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 }
 
 func addConsoleProxySidecar(pod *k8sv1.Pod, proxyImage string, proxyPort int) {
-	// Shared volume for kubevirt-private
-	pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
-		Name: "kubevirt-private",
-		VolumeSource: k8sv1.VolumeSource{
-			EmptyDir: &k8sv1.EmptyDirVolumeSource{},
-		},
-	})
-
-	// Mount in virt-launcher
-	for i, c := range pod.Spec.Containers {
-		if c.Name == "virt-launcher" {
-			pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, k8sv1.VolumeMount{
-				Name:      "kubevirt-private",
-				MountPath: "/var/run/kubevirt-private",
-			})
+	// Find the existing "private" volume used by compute for /var/run/kubevirt-private
+	privateVolName := "private"
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == "private" {
+			privateVolName = v.Name
+			break
 		}
 	}
 
-	// Add proxy as a sidecar
+	// Add proxy as a sidecar, sharing the same private volume as compute
 	pod.Spec.Containers = append(pod.Spec.Containers, k8sv1.Container{
 		Name:    "console-proxy",
 		Image:   proxyImage,
-		Command: []string{"/proxy", fmt.Sprintf("-port=%d", proxyPort)},
-		Ports: []k8sv1.ContainerPort{
-			{ContainerPort: int32(proxyPort), Protocol: "TCP"},
-		},
+		Command: []string{"/console-proxy", fmt.Sprintf("-port=%d", proxyPort), "-listen=unix"},
 		VolumeMounts: []k8sv1.VolumeMount{
-			{Name: "kubevirt-private", MountPath: "/var/run/kubevirt-private"},
+			{Name: privateVolName, MountPath: "/var/run/kubevirt-private"},
 		},
 		SecurityContext: &k8sv1.SecurityContext{
 			Capabilities: &k8sv1.Capabilities{Drop: []k8sv1.Capability{"ALL"}},
 		},
 	})
-
-	// Expose port on host
-	pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports = append(pod.Spec.Containers[len(pod.Spec.Containers)-1].Ports, k8sv1.ContainerPort{HostPort: int32(proxyPort)})
 }
 
 func mountHostDevices(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
@@ -274,6 +263,28 @@ func mountHostDevices(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
 
 	for _, dev := range kvmDevices {
 		mountDevice(pod, dev.name, dev.path, &hostPathCharDev)
+	}
+
+	// Mount cgroup filesystem — virt-launcher reads cpuset.cpus.effective
+	hostPathDir := k8sv1.HostPathDirectory
+	pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
+		Name: "cgroup",
+		VolumeSource: k8sv1.VolumeSource{
+			HostPath: &k8sv1.HostPathVolumeSource{
+				Path: "/sys/fs/cgroup",
+				Type: &hostPathDir,
+			},
+		},
+	})
+	for i, c := range pod.Spec.Containers {
+		if c.Name == "compute" {
+			pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, k8sv1.VolumeMount{
+				Name:      "cgroup",
+				MountPath: "/sys/fs/cgroup",
+				ReadOnly:  true,
+			})
+			break
+		}
 	}
 
 	// Mount GPU devices if requested in VMI
@@ -432,6 +443,16 @@ func forcePasstBinding(spec *virtv1.VirtualMachineInstanceSpec) {
 	}
 }
 
+func populateInterfaceStatus(vmi *virtv1.VirtualMachineInstance) {
+	for i, iface := range vmi.Spec.Domain.Devices.Interfaces {
+		podIfaceName := fmt.Sprintf("eth%d", i)
+		vmi.Status.Interfaces = append(vmi.Status.Interfaces, virtv1.VirtualMachineInstanceNetworkInterface{
+			Name:             iface.Name,
+			PodInterfaceName: podIfaceName,
+		})
+	}
+}
+
 func cleanupForStandalone(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
 	// Remove Kubernetes-specific node selectors that don't apply to standalone execution
 	if pod.Spec.NodeSelector != nil {
@@ -449,6 +470,23 @@ func cleanupForStandalone(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
 			"For standalone execution, configure CPU pinning via the container runtime "+
 			"(e.g., podman run --cpuset-cpus=0-3)\n")
 	}
+
+	// Set restart policy to allow retries for container disk race conditions
+	pod.Spec.RestartPolicy = k8sv1.RestartPolicyOnFailure
+
+	// Move restartPolicy=Always init containers to regular containers.
+	// Kubernetes 1.28+ treats these as native sidecars, but Podman doesn't
+	// support this and they block the init container pipeline.
+	var keptInit []k8sv1.Container
+	for _, c := range pod.Spec.InitContainers {
+		if c.RestartPolicy != nil && *c.RestartPolicy == k8sv1.ContainerRestartPolicyAlways {
+			c.RestartPolicy = nil
+			pod.Spec.Containers = append(pod.Spec.Containers, c)
+		} else {
+			keptInit = append(keptInit, c)
+		}
+	}
+	pod.Spec.InitContainers = keptInit
 }
 
 var codec = serializer.NewCodecFactory(runtime.NewScheme()).UniversalDeserializer()
