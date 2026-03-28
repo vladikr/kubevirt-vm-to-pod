@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	k8sv1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/vladikr/kubevirt-vm-to-pod/pkg/transformer"
@@ -32,12 +33,24 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "kubevirt-vm-to-pod",
+		Use:   "kubevirt-vm-to-pod [vm-file]",
 		Short: "Generate Pod YAML from a KubeVirt VirtualMachine YAML",
+		Long: `Generate Pod YAML from a KubeVirt VirtualMachine YAML.
+
+The VM file can be provided as a positional argument, via --vm-file flag,
+or piped through stdin:
+
+  kubevirt-vm-to-pod vm.yaml
+  kubevirt-vm-to-pod --vm-file=vm.yaml
+  cat vm.yaml | kubevirt-vm-to-pod
+  podman run --rm -i quay.io/vladikr/kubevirt-vm-to-pod-tool < vm.yaml | podman kube play -`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if vmFile == "" {
-				return fmt.Errorf("vm-file is required")
+			// Resolve VM input: positional arg > --vm-file flag > stdin
+			if len(args) > 0 {
+				vmFile = args[0]
 			}
+
 			if output != "yaml" && output != "json" {
 				return fmt.Errorf("output must be 'yaml' or 'json'")
 			}
@@ -56,7 +69,14 @@ func main() {
 				transformer.WithForcePasst(!noPasst),
 				transformer.WithMountDevices(mountDevices),
 			)
-			pod, err := t.Transform(vmFile)
+
+			var pod *k8sv1.Pod
+			var err error
+			if vmFile != "" && vmFile != "-" {
+				pod, err = t.Transform(vmFile)
+			} else {
+				pod, err = t.TransformReader(os.Stdin)
+			}
 			if err != nil {
 				return fmt.Errorf("failed to transform VM to Pod: %v", err)
 			}
@@ -76,7 +96,7 @@ func main() {
 		},
 	}
 
-	rootCmd.Flags().StringVar(&vmFile, "vm-file", "", "Path to VirtualMachine YAML file (required)")
+	rootCmd.Flags().StringVar(&vmFile, "vm-file", "", "Path to VirtualMachine YAML file (reads stdin if omitted)")
 	rootCmd.Flags().StringVar(&output, "output", "yaml", "Output format: yaml or json")
 	rootCmd.Flags().StringVar(&launcherImage, "launcher-image", "", "Virt-launcher image (default: quay.io/kubevirt/virt-launcher:v1.8.0)")
 	rootCmd.Flags().StringVar(&instancetypeFile, "instancetype-file", "", "Path to Instancetype YAML file (optional)")
@@ -85,7 +105,7 @@ func main() {
 	rootCmd.Flags().StringVar(&proxyImage, "proxy-image", "", "Console proxy image (default: quay.io/vladikr/kubevirt-console-proxy:latest)")
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 8080, "Port for the console proxy to listen on")
 	rootCmd.Flags().BoolVar(&noPasst, "no-passt", false, "Preserve original network bindings instead of converting to Passt (requires CNI plugins)")
-	rootCmd.Flags().BoolVar(&mountDevices, "mount-devices", false, "Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution")
+	rootCmd.Flags().BoolVar(&mountDevices, "mount-devices", true, "Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution")
 
 	consoleCmd := &cobra.Command{
 		Use:   "console <vm-name>",
