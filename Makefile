@@ -11,7 +11,7 @@ GO_TEST_FLAGS ?= -v -race
 
 DEV_MODE ?= false  # Set to true for dev builds (dynamically replaces KubeVirt dep with main branch)
 
-.PHONY: all build test podman-build podman-build-dev podman-push clean build-proxy podman-build-proxy podman-push-proxy functional-test functional-test-proxy functional-test-quick functional-test-all
+.PHONY: all build test podman-build podman-build-dev podman-push clean build-proxy podman-build-proxy podman-push-proxy functional-test functional-test-proxy functional-test-quick functional-test-all run stop
 
 all: build test build-proxy
 
@@ -34,8 +34,21 @@ podman-build-dev: podman-build-proxy
 podman-push: podman-push-proxy
 	podman push $(PODMAN_IMG)
 
+# Run a VM: make run VM=myvm.yaml
+run: podman-build
+ifndef VM
+	$(error VM is required. Usage: make run VM=myvm.yaml)
+endif
+	podman run --rm -i $(PODMAN_IMG) < $(VM) | podman kube play -
+
+stop:
+ifndef VM
+	$(error VM is required. Usage: make stop VM=myvm.yaml)
+endif
+	podman run --rm -i $(PODMAN_IMG) < $(VM) | podman kube play --down -
+
 build-proxy:
-	$(GO_BUILD_ENV) go build -o $(PROXY_BINARY_NAME) ./pkg/transformer/proxy.go
+	$(GO_BUILD_ENV) go build -o $(PROXY_BINARY_NAME) ./cmd/proxy
 
 podman-build-proxy:
 	podman build -f Dockerfile.proxy --build-arg dev_mode=$(DEV_MODE) -t $(PODMAN_REPO)-proxy:$(PODMAN_TAG) .
