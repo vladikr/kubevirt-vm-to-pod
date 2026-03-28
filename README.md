@@ -35,36 +35,51 @@ go install github.com/vladikr/kubevirt-vm-to-pod/cmd@latest
 
 ## Quick Start
 
-### Basic Usage
+### One-Command VM (recommended)
+
+Clone the repo and run a VM with a single command:
 
 ```bash
-# Convert VM to Pod
-./kubevirt-vm-to-pod --vm-file=myvm.yaml > pod.yaml
-
-# Run with Podman
-podman kube play pod.yaml
+git clone https://github.com/vladikr/kubevirt-vm-to-pod.git
+cd kubevirt-vm-to-pod
+make run VM=myvm.yaml
 ```
 
-### Recommended for Standalone Execution
+This builds the container image, generates the Pod YAML, and starts it with `podman kube play`.
+
+To stop:
 
 ```bash
-# Generate Pod with device mounts for KVM access
-./kubevirt-vm-to-pod --vm-file=myvm.yaml --mount-devices > pod.yaml
+make stop VM=myvm.yaml
+```
 
-# Run with Podman
+### Container Usage (no build required)
+
+```bash
+# Pull and run — no Go toolchain needed
+podman run --rm -i quay.io/vladikr/kubevirt-vm-to-pod-tool < myvm.yaml | podman kube play -
+```
+
+### CLI Usage
+
+```bash
+# From a file
+./kubevirt-vm-to-pod myvm.yaml | podman kube play -
+
+# From stdin
+cat myvm.yaml | ./kubevirt-vm-to-pod | podman kube play -
+
+# Generate and inspect the Pod YAML first
+./kubevirt-vm-to-pod myvm.yaml > pod.yaml
 podman kube play pod.yaml
-
-# Check VM status
-podman ps
-podman logs <pod-name>-compute
 ```
 
 ## Command-Line Flags
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--vm-file` | Path to VirtualMachine YAML file | **(required)** |
-| `--mount-devices` | Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution | `false` |
+| `--vm-file` | Path to VirtualMachine YAML file (also accepts positional arg or stdin) | stdin |
+| `--mount-devices` | Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution | `true` |
 | `--no-passt` | Preserve original network bindings instead of converting to Passt (requires CNI plugins) | `false` |
 | `--add-console-proxy` | Add console proxy sidecar to the Pod | `false` |
 | `--launcher-image` | Virt-launcher container image | `quay.io/kubevirt/virt-launcher:v1.8.0` |
