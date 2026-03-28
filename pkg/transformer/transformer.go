@@ -3,6 +3,7 @@ package transformer
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -144,6 +145,18 @@ func (t *VMToPodTransformer) Transform(vmFile string) (*k8sv1.Pod, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read VM file: %v", err)
 	}
+	return t.transformBytes(data)
+}
+
+func (t *VMToPodTransformer) TransformReader(r io.Reader) (*k8sv1.Pod, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read VM from input: %v", err)
+	}
+	return t.transformBytes(data)
+}
+
+func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 	vm := &virtv1.VirtualMachine{}
 	if err := yaml.Unmarshal(data, vm); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal VM: %v", err)
