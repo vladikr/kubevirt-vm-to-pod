@@ -162,6 +162,10 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 		return nil, fmt.Errorf("failed to unmarshal VM: %v", err)
 	}
 
+	if err := validateForStandalone(vm); err != nil {
+		return nil, err
+	}
+
 	if vm.ObjectMeta.Namespace == "" {
 		vm.ObjectMeta.Namespace = "default"
 	}
@@ -454,6 +458,62 @@ func forcePasstBinding(spec *virtv1.VirtualMachineInstanceSpec) {
 			}
 		}
 	}
+}
+
+func validateForStandalone(vm *virtv1.VirtualMachine) error {
+	spec := vm.Spec.Template.Spec
+
+	var errors []string
+	var warnings []string
+
+	for _, vol := range spec.Volumes {
+		if vol.PersistentVolumeClaim != nil {
+			errors = append(errors, fmt.Sprintf(
+				"volume %q uses PersistentVolumeClaim which requires Kubernetes storage. "+
+					"Use a containerDisk or mount a local file as a hostPath volume instead", vol.Name))
+		}
+		if vol.DataVolume != nil {
+			errors = append(errors, fmt.Sprintf(
+				"volume %q uses DataVolume which requires the CDI controller. "+
+					"Pre-download the image and use a containerDisk instead", vol.Name))
+		}
+		if vol.ConfigMap != nil {
+			errors = append(errors, fmt.Sprintf(
+				"volume %q uses ConfigMap which requires the Kubernetes API. "+
+					"Use a cloudInitNoCloud or cloudInitConfigDrive volume with inline data instead", vol.Name))
+		}
+		if vol.Secret != nil {
+			errors = append(errors, fmt.Sprintf(
+				"volume %q uses Secret which requires the Kubernetes API. "+
+					"Use a cloudInitNoCloud or cloudInitConfigDrive volume with inline data instead", vol.Name))
+		}
+		if vol.ServiceAccount != nil {
+			errors = append(errors, fmt.Sprintf(
+				"volume %q uses ServiceAccount which requires the Kubernetes API", vol.Name))
+		}
+	}
+
+	for _, net := range spec.Networks {
+		if net.Multus != nil {
+			warnings = append(warnings, fmt.Sprintf(
+				"network %q uses Multus which requires CNI plugins configured for podman. "+
+					"Passt networking will be used by default (use --no-passt to keep Multus)", net.Name))
+		}
+	}
+
+	for _, w := range warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", w)
+	}
+
+	if len(errors) > 0 {
+		msg := "VM definition contains features unsupported in standalone mode:\n"
+		for _, e := range errors {
+			msg += fmt.Sprintf("  - %s\n", e)
+		}
+		return fmt.Errorf("%s", msg)
+	}
+
+	return nil
 }
 
 func populateInterfaceStatus(vmi *virtv1.VirtualMachineInstance) {
