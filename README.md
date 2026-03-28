@@ -314,6 +314,13 @@ make podman-build
 make podman-push
 ```
 
+### Multi-Architecture Build (amd64 + arm64)
+
+```bash
+# Build and push multi-arch manifest
+make podman-push-multiarch
+```
+
 ### Development Mode
 
 Build with local KubeVirt source:
@@ -370,6 +377,7 @@ VirtualMachine YAML
 
 - **KubeVirt Version**: v1.8.0
 - **Kubernetes APIs**: v0.34.2
+- **Architectures**: amd64, arm64
 - **Container Runtime**: Podman 4.x+, Docker (experimental)
 - **Host OS**: Linux with KVM support (for full VM boot)
 

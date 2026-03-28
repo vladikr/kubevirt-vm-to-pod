@@ -1,6 +1,8 @@
-FROM golang:1.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
 
-arg dev_mode=false
+ARG BUILDPLATFORM
+ARG TARGETARCH
+ARG dev_mode=false
 WORKDIR /workspace
 # Copy go.mod and go.sum based on mode
 COPY go.mod ./
@@ -14,7 +16,7 @@ RUN if [ "$dev_mode" = "true" ]; then \
     fi
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o kubevirt-vm-to-pod ./cmd
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -o kubevirt-vm-to-pod ./cmd
 
 # Final image
 FROM gcr.io/distroless/static:nonroot

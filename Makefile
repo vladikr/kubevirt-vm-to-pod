@@ -6,12 +6,13 @@ PODMAN_TAG ?= latest
 PODMAN_IMG ?= $(PODMAN_REPO):$(PODMAN_TAG)
 PROXY_BINARY_NAME ?= console-proxy
 
-GO_BUILD_ENV ?= CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+GO_BUILD_ENV ?= CGO_ENABLED=0 GOOS=linux
+PLATFORMS ?= linux/amd64,linux/arm64
 GO_TEST_FLAGS ?= -v -race
 
 DEV_MODE ?= false  # Set to true for dev builds (dynamically replaces KubeVirt dep with main branch)
 
-.PHONY: all build test podman-build podman-build-dev podman-push clean build-proxy podman-build-proxy podman-push-proxy functional-test functional-test-proxy functional-test-quick functional-test-all run stop
+.PHONY: all build test podman-build podman-build-dev podman-push podman-build-multiarch podman-push-multiarch clean build-proxy podman-build-proxy podman-push-proxy functional-test functional-test-proxy functional-test-quick functional-test-all run stop
 
 all: build test build-proxy
 
@@ -33,6 +34,12 @@ podman-build-dev: podman-build-proxy
 
 podman-push: podman-push-proxy
 	podman push $(PODMAN_IMG)
+
+podman-build-multiarch:
+	podman build --platform $(PLATFORMS) --build-arg dev_mode=$(DEV_MODE) --manifest $(PODMAN_IMG) .
+
+podman-push-multiarch: podman-build-multiarch
+	podman manifest push $(PODMAN_IMG) docker://$(PODMAN_IMG)
 
 # Run a VM: make run VM=myvm.yaml
 run: podman-build

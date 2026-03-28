@@ -1,5 +1,7 @@
-FROM golang:1.24 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
 
+ARG BUILDPLATFORM
+ARG TARGETARCH
 ARG dev_mode=false
 WORKDIR /workspace
 COPY go.mod ./
@@ -13,7 +15,7 @@ RUN if [ "$dev_mode" = "true" ]; then \
     fi
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o console-proxy ./cmd/proxy && \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -o console-proxy ./cmd/proxy && \
     chmod 755 console-proxy
 
 FROM gcr.io/distroless/static:nonroot
