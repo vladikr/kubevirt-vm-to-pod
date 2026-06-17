@@ -32,6 +32,7 @@ import (
 type VMToPodTransformer struct {
 	ClusterConfig 		*virtconfig.ClusterConfig
 	TemplateSvc   		*services.TemplateService
+	pvcCache		cache.Indexer
 	LauncherImage 		string
 	InstancetypeFile 	string
 	PreferenceFile   	string
@@ -130,6 +131,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 	t := &VMToPodTransformer{
 		ClusterConfig: config,
 		TemplateSvc:   templateSvc,
+		pvcCache:      pvcCache,
 		LauncherImage: launcherImage,
 	}
 
@@ -165,6 +167,8 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 	if err := validateForStandalone(vm); err != nil {
 		return nil, err
 	}
+
+	t.stubPVCsForVM(vm)
 
 	if vm.ObjectMeta.Namespace == "" {
 		vm.ObjectMeta.Namespace = "default"
@@ -219,7 +223,6 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 	}
 
 	cleanupForStandalone(pod, vmi)
-	injectPVCVolumes(pod, vmi)
 
 	// Populate VMI interface status with PodInterfaceName.
 	// In Kubernetes, virt-handler sets this; for standalone mode we must do it ourselves.
@@ -522,47 +525,34 @@ func populateInterfaceStatus(vmi *virtv1.VirtualMachineInstance) {
 	}
 }
 
-// injectPVCVolumes passes PersistentVolumeClaim volumes from the VMI spec through
-// to the pod spec. RenderLaunchManifest relies on a PVC cache populated by the
-// Kubernetes API; in standalone mode the cache is empty so PVC-backed disks are
-// silently dropped. This function adds any PVC volumes that are missing from the
-// rendered pod and mounts them in the compute container at the path virt-launcher
-// uses for disk access (/var/run/kubevirt-private/vmi-disks/<volumeName>).
-// podman kube play treats persistentVolumeClaim.claimName as a named Podman volume,
-// creating it automatically if it does not already exist.
-func injectPVCVolumes(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
-	existing := make(map[string]struct{}, len(pod.Spec.Volumes))
-	for _, v := range pod.Spec.Volumes {
-		existing[v.Name] = struct{}{}
+// stubPVCsForVM pre-populates the PVC cache with minimal stub objects for every
+// persistentVolumeClaim volume referenced in the VM spec. RenderLaunchManifest
+// looks up each PVC by namespace/name and fails if it is absent; in standalone
+// mode there is no Kubernetes API to provide real PVCs. The stubs carry enough
+// metadata for the template service to proceed: Filesystem volume mode and
+// ReadWriteOnce access, which is what a Podman named volume provides.
+func (t *VMToPodTransformer) stubPVCsForVM(vm *virtv1.VirtualMachine) {
+	ns := vm.Namespace
+	if ns == "" {
+		ns = "default"
 	}
-
-	for _, vol := range vmi.Spec.Volumes {
+	filesystemMode := k8sv1.PersistentVolumeFilesystem
+	for _, vol := range vm.Spec.Template.Spec.Volumes {
 		if vol.PersistentVolumeClaim == nil {
 			continue
 		}
-		if _, ok := existing[vol.Name]; ok {
-			continue
-		}
-
-		pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
-			Name: vol.Name,
-			VolumeSource: k8sv1.VolumeSource{
-				PersistentVolumeClaim: &k8sv1.PersistentVolumeClaimVolumeSource{
-					ClaimName: vol.PersistentVolumeClaim.ClaimName,
-				},
+		claimName := vol.PersistentVolumeClaim.ClaimName
+		pvc := &k8sv1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      claimName,
+				Namespace: ns,
 			},
-		})
-
-		mountPath := fmt.Sprintf("/var/run/kubevirt-private/vmi-disks/%s", vol.Name)
-		for i, c := range pod.Spec.Containers {
-			if c.Name == "compute" {
-				pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, k8sv1.VolumeMount{
-					Name:      vol.Name,
-					MountPath: mountPath,
-				})
-				break
-			}
+			Spec: k8sv1.PersistentVolumeClaimSpec{
+				AccessModes: []k8sv1.PersistentVolumeAccessMode{k8sv1.ReadWriteOnce},
+				VolumeMode:  &filesystemMode,
+			},
 		}
+		_ = t.pvcCache.Add(pvc)
 	}
 }
 
