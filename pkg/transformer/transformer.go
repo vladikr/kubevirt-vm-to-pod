@@ -100,7 +100,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 			Phase: virtv1.KubeVirtPhaseDeploying,
 		},
 	}
-	kv.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{"ImageVolume"}
+	kv.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{"ImageVolume", "HostDisk"}
 
 	config, _, _ := testutils.NewFakeClusterConfigUsingKV(kv)
 
