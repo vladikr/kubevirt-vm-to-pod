@@ -219,6 +219,7 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 	}
 
 	cleanupForStandalone(pod, vmi)
+	injectPVCVolumes(pod, vmi)
 
 	// Populate VMI interface status with PodInterfaceName.
 	// In Kubernetes, virt-handler sets this; for standalone mode we must do it ourselves.
@@ -467,11 +468,6 @@ func validateForStandalone(vm *virtv1.VirtualMachine) error {
 	var warnings []string
 
 	for _, vol := range spec.Volumes {
-		if vol.PersistentVolumeClaim != nil {
-			errors = append(errors, fmt.Sprintf(
-				"volume %q uses PersistentVolumeClaim which requires Kubernetes storage. "+
-					"Use a containerDisk or mount a local file as a hostPath volume instead", vol.Name))
-		}
 		if vol.DataVolume != nil {
 			errors = append(errors, fmt.Sprintf(
 				"volume %q uses DataVolume which requires the CDI controller. "+
@@ -523,6 +519,50 @@ func populateInterfaceStatus(vmi *virtv1.VirtualMachineInstance) {
 			Name:             iface.Name,
 			PodInterfaceName: podIfaceName,
 		})
+	}
+}
+
+// injectPVCVolumes passes PersistentVolumeClaim volumes from the VMI spec through
+// to the pod spec. RenderLaunchManifest relies on a PVC cache populated by the
+// Kubernetes API; in standalone mode the cache is empty so PVC-backed disks are
+// silently dropped. This function adds any PVC volumes that are missing from the
+// rendered pod and mounts them in the compute container at the path virt-launcher
+// uses for disk access (/var/run/kubevirt-private/vmi-disks/<volumeName>).
+// podman kube play treats persistentVolumeClaim.claimName as a named Podman volume,
+// creating it automatically if it does not already exist.
+func injectPVCVolumes(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
+	existing := make(map[string]struct{}, len(pod.Spec.Volumes))
+	for _, v := range pod.Spec.Volumes {
+		existing[v.Name] = struct{}{}
+	}
+
+	for _, vol := range vmi.Spec.Volumes {
+		if vol.PersistentVolumeClaim == nil {
+			continue
+		}
+		if _, ok := existing[vol.Name]; ok {
+			continue
+		}
+
+		pod.Spec.Volumes = append(pod.Spec.Volumes, k8sv1.Volume{
+			Name: vol.Name,
+			VolumeSource: k8sv1.VolumeSource{
+				PersistentVolumeClaim: &k8sv1.PersistentVolumeClaimVolumeSource{
+					ClaimName: vol.PersistentVolumeClaim.ClaimName,
+				},
+			},
+		})
+
+		mountPath := fmt.Sprintf("/var/run/kubevirt-private/vmi-disks/%s", vol.Name)
+		for i, c := range pod.Spec.Containers {
+			if c.Name == "compute" {
+				pod.Spec.Containers[i].VolumeMounts = append(c.VolumeMounts, k8sv1.VolumeMount{
+					Name:      vol.Name,
+					MountPath: mountPath,
+				})
+				break
+			}
+		}
 	}
 }
 
