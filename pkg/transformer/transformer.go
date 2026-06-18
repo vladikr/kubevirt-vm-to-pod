@@ -36,8 +36,10 @@ type VMToPodTransformer struct {
 	InstancetypeFile 	string
 	PreferenceFile   	string
 	AddConsoleProxy 	bool
+	AddAccessProxies	bool
 	ProxyImage      	string
 	ProxyPort       	int
+	VNCProxyPort    	int
 	ForcePasst      	bool
 	MountDevices    	bool
 }
@@ -79,6 +81,15 @@ func WithForcePasst(enabled bool) TransformerOption {
 func WithMountDevices(enabled bool) TransformerOption {
 	return func(t *VMToPodTransformer) {
 		t.MountDevices = enabled
+	}
+}
+
+func WithAddAccessProxies(enabled bool, image string, consolePort int, vncPort int) TransformerOption {
+	return func(t *VMToPodTransformer) {
+		t.AddAccessProxies = enabled
+		t.ProxyImage = image
+		t.ProxyPort = consolePort
+		t.VNCProxyPort = vncPort
 	}
 }
 
@@ -210,7 +221,19 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 		pod.ObjectMeta.GenerateName = ""
 	}
 
-	if t.AddConsoleProxy {
+	if t.AddAccessProxies {
+		addAccessProxySidecar(pod, t.ProxyImage, t.ProxyPort, t.VNCProxyPort)
+		// Add warning annotation about proxy ports
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		pod.Annotations["kubevirt-vm-to-pod/proxy-ports"] = fmt.Sprintf(
+			"Access proxy ports (console: %d, vnc: %d) use containerPort only. "+
+			"If you need external access, use podman kube play with -p flags (e.g., -p %d:%d -p %d:%d). "+
+			"Ensure these ports do not conflict with other services.",
+			t.ProxyPort, t.VNCProxyPort, t.ProxyPort, t.ProxyPort, t.VNCProxyPort, t.VNCProxyPort)
+	} else if t.AddConsoleProxy {
+		// Backward compatibility: legacy console-only proxy
 		addConsoleProxySidecar(pod, t.ProxyImage, t.ProxyPort)
 	}
 
@@ -256,6 +279,35 @@ func addConsoleProxySidecar(pod *k8sv1.Pod, proxyImage string, proxyPort int) {
 		Name:    "console-proxy",
 		Image:   proxyImage,
 		Command: []string{"/console-proxy", fmt.Sprintf("-port=%d", proxyPort), "-listen=unix"},
+		VolumeMounts: []k8sv1.VolumeMount{
+			{Name: privateVolName, MountPath: "/var/run/kubevirt-private"},
+		},
+		SecurityContext: &k8sv1.SecurityContext{
+			Capabilities: &k8sv1.Capabilities{Drop: []k8sv1.Capability{"ALL"}},
+		},
+	})
+}
+
+func addAccessProxySidecar(pod *k8sv1.Pod, proxyImage string, consolePort int, vncPort int) {
+	// Find the existing "private" volume used by compute for /var/run/kubevirt-private
+	privateVolName := "private"
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == "private" {
+			privateVolName = v.Name
+			break
+		}
+	}
+
+	// Add combined access proxy as a sidecar, sharing the same private volume as compute
+	// This sidecar will handle both serial console and VNC access
+	pod.Spec.Containers = append(pod.Spec.Containers, k8sv1.Container{
+		Name:    "access-proxy",
+		Image:   proxyImage,
+		Command: []string{"/console-proxy", fmt.Sprintf("-port=%d", consolePort), "-listen=unix"},
+		Ports: []k8sv1.ContainerPort{
+			{Name: "console", ContainerPort: int32(consolePort), Protocol: k8sv1.ProtocolTCP},
+			{Name: "vnc", ContainerPort: int32(vncPort), Protocol: k8sv1.ProtocolTCP},
+		},
 		VolumeMounts: []k8sv1.VolumeMount{
 			{Name: privateVolName, MountPath: "/var/run/kubevirt-private"},
 		},

@@ -394,3 +394,274 @@ spec:
 		require.Nil(t, vmi.Spec.Domain.Devices.Interfaces[0].PasstBinding, "Should not have Passt binding")
 	})
 }
+
+func TestTransformWithAccessProxies(t *testing.T) {
+	t.Run("access proxies enabled by default", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		transformer := NewVMToPodTransformer(WithAddAccessProxies(true, "test-proxy-image", 28080, 15900))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Should have compute + access-proxy containers
+		require.Len(t, pod.Spec.Containers, 2)
+
+		// Find access-proxy container
+		var proxyContainer k8sv1.Container
+		found := false
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "access-proxy" {
+				proxyContainer = c
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "access-proxy container should be present")
+		require.Equal(t, "test-proxy-image", proxyContainer.Image)
+
+		// Check containerPorts
+		require.Len(t, proxyContainer.Ports, 2, "Should have 2 containerPort entries")
+		require.Equal(t, "console", proxyContainer.Ports[0].Name)
+		require.Equal(t, int32(28080), proxyContainer.Ports[0].ContainerPort)
+		require.Equal(t, k8sv1.ProtocolTCP, proxyContainer.Ports[0].Protocol)
+		require.Equal(t, "vnc", proxyContainer.Ports[1].Name)
+		require.Equal(t, int32(15900), proxyContainer.Ports[1].ContainerPort)
+		require.Equal(t, k8sv1.ProtocolTCP, proxyContainer.Ports[1].Protocol)
+
+		// Check no hostPort
+		require.Equal(t, int32(0), proxyContainer.Ports[0].HostPort, "Should not have HostPort")
+		require.Equal(t, int32(0), proxyContainer.Ports[1].HostPort, "Should not have HostPort")
+
+		// Check warning annotation
+		require.NotNil(t, pod.Annotations)
+		annotation, ok := pod.Annotations["kubevirt-vm-to-pod/proxy-ports"]
+		require.True(t, ok, "Should have proxy-ports annotation")
+		require.Contains(t, annotation, "28080")
+		require.Contains(t, annotation, "15900")
+	})
+
+	t.Run("custom ports are respected", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		transformer := NewVMToPodTransformer(WithAddAccessProxies(true, "test-proxy-image", 9999, 5901))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Find access-proxy container
+		var proxyContainer k8sv1.Container
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "access-proxy" {
+				proxyContainer = c
+				break
+			}
+		}
+
+		require.Len(t, proxyContainer.Ports, 2)
+		require.Equal(t, int32(9999), proxyContainer.Ports[0].ContainerPort)
+		require.Equal(t, int32(5901), proxyContainer.Ports[1].ContainerPort)
+
+		// Check annotation contains custom ports
+		annotation := pod.Annotations["kubevirt-vm-to-pod/proxy-ports"]
+		require.Contains(t, annotation, "9999")
+		require.Contains(t, annotation, "5901")
+	})
+
+	t.Run("access proxies disabled", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		transformer := NewVMToPodTransformer(WithAddAccessProxies(false, "", 28080, 15900))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Should only have compute container
+		require.Len(t, pod.Spec.Containers, 1)
+		require.Equal(t, "compute", pod.Spec.Containers[0].Name)
+
+		// No proxy annotation
+		_, hasAnnotation := pod.Annotations["kubevirt-vm-to-pod/proxy-ports"]
+		require.False(t, hasAnnotation, "Should not have proxy-ports annotation when disabled")
+	})
+
+	t.Run("no hostPort on proxy container", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		transformer := NewVMToPodTransformer(WithAddAccessProxies(true, "test-proxy-image", 28080, 15900))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Find access-proxy container and verify no hostPort
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "access-proxy" {
+				for _, port := range c.Ports {
+					require.Equal(t, int32(0), port.HostPort, "Port %s should not have HostPort", port.Name)
+				}
+			}
+		}
+	})
+
+	t.Run("shared volume mounted in both containers", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		transformer := NewVMToPodTransformer(WithAddAccessProxies(true, "test-proxy-image", 28080, 15900))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Find the private volume
+		privateVolumeName := ""
+		for _, v := range pod.Spec.Volumes {
+			if v.Name == "private" {
+				privateVolumeName = v.Name
+				break
+			}
+		}
+		require.NotEmpty(t, privateVolumeName, "private volume should exist")
+
+		// Verify both containers mount it
+		computeMountsPrivate := false
+		proxyMountsPrivate := false
+
+		for _, c := range pod.Spec.Containers {
+			for _, mount := range c.VolumeMounts {
+				if mount.Name == privateVolumeName {
+					if c.Name == "compute" {
+						computeMountsPrivate = true
+					}
+					if c.Name == "access-proxy" {
+						proxyMountsPrivate = true
+					}
+				}
+			}
+		}
+
+		require.True(t, computeMountsPrivate, "compute container should mount private volume")
+		require.True(t, proxyMountsPrivate, "access-proxy container should mount private volume")
+	})
+
+	t.Run("backward compat: legacy console proxy still works", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		// Use legacy WithAddConsoleProxy
+		transformer := NewVMToPodTransformer(WithAddConsoleProxy(true, "test-proxy-image", 8080))
+		pod, err := transformer.Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		// Should have console-proxy container (not access-proxy)
+		require.Len(t, pod.Spec.Containers, 2)
+		found := false
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "console-proxy" {
+				found = true
+			}
+			require.NotEqual(t, "access-proxy", c.Name, "Should not have access-proxy when using legacy path")
+		}
+		require.True(t, found, "Should have console-proxy container")
+	})
+}

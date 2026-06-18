@@ -14,7 +14,7 @@ VM_FILE="$TEST_DIR/test-vm.yaml"
 POD_YAML="$TEST_DIR/test-pod-with-proxy.yaml"
 BINARY="$REPO_ROOT/kubevirt-vm-to-pod"
 POD_NAME="virt-launcher-cirros-test"
-PROXY_PORT=8080
+PROXY_PORT=28080
 TEST_TIMEOUT=180
 
 echo_success() { echo -e "${GREEN}✓${NC} $1"; }
@@ -48,10 +48,10 @@ if [ ! -f "$BINARY" ]; then
     echo_success "Binary built successfully"
 fi
 
-# Step 2: Generate Pod YAML with console proxy, force-passt, and device mounting
-echo_info "Generating Pod YAML with console proxy, force-passt, and device mounting..."
+# Step 2: Generate Pod YAML with access proxy (default) and device mounting
+echo_info "Generating Pod YAML with access proxy and device mounting..."
 cd "$REPO_ROOT"
-"$BINARY" --vm-file="$VM_FILE" --add-console-proxy --force-passt --mount-devices > "$POD_YAML"
+"$BINARY" --vm-file="$VM_FILE" --mount-devices > "$POD_YAML"
 
 if [ ! -s "$POD_YAML" ]; then
     echo_error "Failed to generate Pod YAML"
@@ -110,7 +110,7 @@ fi
 # Step 5: Verify both containers
 echo_info "Verifying containers..."
 COMPUTE_CONTAINER=$(podman ps --filter "pod=$POD_NAME" --filter "name=.*compute" --format "{{.Names}}" | head -1)
-PROXY_CONTAINER=$(podman ps --filter "pod=$POD_NAME" --filter "name=.*console-proxy" --format "{{.Names}}" | head -1)
+PROXY_CONTAINER=$(podman ps --filter "pod=$POD_NAME" --filter "name=.*access-proxy" --format "{{.Names}}" | head -1)
 
 if [ -z "$COMPUTE_CONTAINER" ]; then
     echo_error "Compute container not found"
@@ -119,10 +119,10 @@ fi
 echo_success "Compute container: $COMPUTE_CONTAINER"
 
 if [ -z "$PROXY_CONTAINER" ]; then
-    echo_error "Console proxy container not found"
+    echo_error "Access proxy container not found"
     exit 1
 fi
-echo_success "Console proxy container: $PROXY_CONTAINER"
+echo_success "Access proxy container: $PROXY_CONTAINER"
 
 # Step 6: Check console proxy is listening
 echo_info "Checking console proxy port..."

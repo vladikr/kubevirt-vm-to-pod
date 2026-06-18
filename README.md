@@ -9,7 +9,7 @@ Convert KubeVirt VirtualMachine definitions into standalone Pods that can run ou
 **Key Features:**
 - ✅ Converts VM to standalone Pod YAML
 - ✅ Supports Instancetype and Preference expansion
-- ✅ Optional console proxy sidecar for VM access
+- ✅ Access proxy sidecar for console and VNC access (enabled by default)
 - ✅ Passt network binding by default for standalone execution
 - ✅ Mount KVM devices for hardware virtualization
 - ✅ Compatible with Podman kube play
@@ -81,12 +81,14 @@ podman kube play pod.yaml
 | `--vm-file` | Path to VirtualMachine YAML file (also accepts positional arg or stdin) | stdin |
 | `--mount-devices` | Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution | `true` |
 | `--no-passt` | Preserve original network bindings instead of converting to Passt (requires CNI plugins) | `false` |
-| `--add-console-proxy` | Add console proxy sidecar to the Pod | `false` |
+| `--add-access-proxies` | Add access proxy sidecar with console and VNC ports | `true` |
+| `--proxy-port` | Port for the console proxy to listen on | `28080` |
+| `--vnc-proxy-port` | Port for the VNC proxy to listen on | `15900` |
+| `--proxy-image` | Access proxy container image | `quay.io/vladikr/kubevirt-console-proxy:latest` |
+| `--add-console-proxy` | (Deprecated) Add console proxy sidecar (use --add-access-proxies) | `false` |
 | `--launcher-image` | Virt-launcher container image | `quay.io/kubevirt/virt-launcher:v1.8.0` |
 | `--instancetype-file` | Path to VirtualMachineInstancetype YAML file (optional) | - |
 | `--preference-file` | Path to VirtualMachinePreference YAML file (optional) | - |
-| `--proxy-image` | Console proxy container image | `quay.io/vladikr/kubevirt-console-proxy:latest` |
-| `--proxy-port` | Port for console proxy to listen on | `8080` |
 | `--output` | Output format: yaml or json | `yaml` |
 
 ## Usage Examples
@@ -113,16 +115,20 @@ podman kube play pod.yaml
   > pod.yaml
 ```
 
-### 3. VM with Console Proxy
+### 3. VM with Access Proxies (customizing ports)
 
 ```bash
-./kubevirt-vm-to-pod \
-  --vm-file=myvm.yaml \
-  --add-console-proxy \
-  --mount-devices \
-  > pod.yaml
+# Access proxies are enabled by default (console: 28080, VNC: 15900)
+./kubevirt-vm-to-pod myvm.yaml > pod.yaml
 
-podman kube play pod.yaml
+# Publish ports for external access
+podman kube play -p 28080:28080 -p 15900:15900 pod.yaml
+
+# Custom ports
+./kubevirt-vm-to-pod --proxy-port=9090 --vnc-proxy-port=5901 myvm.yaml > pod.yaml
+
+# Disable access proxies
+./kubevirt-vm-to-pod --add-access-proxies=false myvm.yaml > pod.yaml
 ```
 
 ### 4. VM with Original Network Bindings (CNI plugins required)
@@ -143,7 +149,6 @@ podman kube play pod.yaml
   --vm-file=myvm.yaml \
   --instancetype-file=instancetype.yaml \
   --preference-file=preference.yaml \
-  --add-console-proxy \
   --mount-devices \
   --launcher-image=quay.io/kubevirt/virt-launcher:v1.8.0 \
   > pod.yaml
@@ -213,20 +218,35 @@ networks:
     pod: {}
 ```
 
-### Console Proxy (`--add-console-proxy`)
+### Access Proxy (default)
 
-Adds a console proxy sidecar container for accessing the VM console.
+An access proxy sidecar is added by default for accessing the VM's serial console and VNC display.
 
 **Features:**
-- WebSocket-based console access
+- WebSocket-based console and VNC access
 - Shared volume with virt-launcher for socket communication
-- Configurable port (default: 8080)
+- Configurable ports (console default: 28080, VNC default: 15900)
+- No hostPort — use `podman kube play -p` for external access
 
-**Access the console:**
+**Ports:**
+- Console: 28080 (override with `--proxy-port`)
+- VNC: 15900 (override with `--vnc-proxy-port`)
+
+**Accessing the VM:**
 ```bash
-# After starting the Pod
-curl http://localhost:8080/console
-# Or use VNC/serial console clients
+# External access requires port forwarding
+podman kube play -p 28080:28080 -p 15900:15900 pod.yaml
+
+# Connect to serial console via WebSocket
+wscat -c ws://localhost:28080/console -s binary.kubevirt.io
+
+# VNC endpoint (once PR 2 implements VNC support)
+# A VNC client can connect to the /vnc WebSocket endpoint
+```
+
+**To disable the access proxy:**
+```bash
+./kubevirt-vm-to-pod --add-access-proxies=false myvm.yaml
 ```
 
 ## Sample VirtualMachine YAML
@@ -344,7 +364,7 @@ The generated Pod contains:
 - **compute container**: virt-launcher running the VM
 - **STANDALONE_VMI env var**: Embedded VMI specification
 - **Device mounts** (if `--mount-devices`): /dev/kvm, /dev/vhost-net, /dev/net/tun
-- **Console proxy sidecar** (if `--add-console-proxy`): WebSocket console access
+- **Access proxy sidecar** (default, disable with `--add-access-proxies=false`): WebSocket console and VNC access
 - **Volume containers**: For container disks and ephemeral storage
 
 ## Architecture
@@ -362,7 +382,7 @@ VirtualMachine YAML
         ↓
    [Pod Rendering]
         ↓
- [Optional: Console Proxy]
+ [Access Proxy (default)]
  [Passt Networking (default)]
  [Optional: Device Mounts]
         ↓
