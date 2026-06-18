@@ -183,6 +183,14 @@ else
     exit 1
 fi
 
+# Verify both port flags are in the command
+if grep -q -- "-port=9999" "$POD_YAML" && grep -q -- "-vnc-port=5901" "$POD_YAML"; then
+    echo_success "Both port flags present in command"
+else
+    echo_error "Port flags not found in proxy command"
+    exit 1
+fi
+
 # Step 7d: Verify no hostPort
 echo_info "Test 6d: Verify no hostPort in proxy container..."
 if ! grep -q "hostPort" "$POD_YAML"; then

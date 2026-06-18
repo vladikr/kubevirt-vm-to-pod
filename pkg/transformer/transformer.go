@@ -303,7 +303,7 @@ func addAccessProxySidecar(pod *k8sv1.Pod, proxyImage string, consolePort int, v
 	pod.Spec.Containers = append(pod.Spec.Containers, k8sv1.Container{
 		Name:    "access-proxy",
 		Image:   proxyImage,
-		Command: []string{"/console-proxy", fmt.Sprintf("-port=%d", consolePort), "-listen=unix"},
+		Command: []string{"/console-proxy", fmt.Sprintf("-port=%d", consolePort), fmt.Sprintf("-vnc-port=%d", vncPort), "-listen=unix"},
 		Ports: []k8sv1.ContainerPort{
 			{Name: "console", ContainerPort: int32(consolePort), Protocol: k8sv1.ProtocolTCP},
 			{Name: "vnc", ContainerPort: int32(vncPort), Protocol: k8sv1.ProtocolTCP},
