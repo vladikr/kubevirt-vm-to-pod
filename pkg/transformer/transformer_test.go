@@ -218,6 +218,110 @@ spec:
 	})
 }
 
+func TestVolumeSupport(t *testing.T) {
+	findVolume := func(pod *k8sv1.Pod, name string) *k8sv1.Volume {
+		for i := range pod.Spec.Volumes {
+			if pod.Spec.Volumes[i].Name == name {
+				return &pod.Spec.Volumes[i]
+			}
+		}
+		return nil
+	}
+
+	findMount := func(pod *k8sv1.Pod, containerName, volumeName string) *k8sv1.VolumeMount {
+		for i := range pod.Spec.Containers {
+			if pod.Spec.Containers[i].Name != containerName {
+				continue
+			}
+			for j := range pod.Spec.Containers[i].VolumeMounts {
+				if pod.Spec.Containers[i].VolumeMounts[j].Name == volumeName {
+					return &pod.Spec.Containers[i].VolumeMounts[j]
+				}
+			}
+		}
+		return nil
+	}
+
+	t.Run("PVC volume produces persistentVolumeClaim and mount in compute", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-pvc
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: datadisk
+      volumes:
+      - persistentVolumeClaim:
+          claimName: test-vm-data
+        name: datadisk
+`)
+		tmpFile, err := os.CreateTemp("", "vm-pvc.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		vol := findVolume(pod, "datadisk")
+		require.NotNil(t, vol, "datadisk volume should be present in pod spec")
+		require.NotNil(t, vol.PersistentVolumeClaim, "volume source should be persistentVolumeClaim")
+		require.Equal(t, "test-vm-data", vol.PersistentVolumeClaim.ClaimName)
+
+		mount := findMount(pod, "compute", "datadisk")
+		require.NotNil(t, mount, "datadisk should be mounted in compute container")
+		require.Contains(t, mount.MountPath, "vmi-disks/datadisk")
+	})
+
+	t.Run("hostDisk volume produces hostPath and mount in compute", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-hostdisk
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: hostdisk
+      volumes:
+      - hostDisk:
+          path: /var/lib/vms/disk.img
+          type: DiskOrCreate
+          capacity: 1Gi
+        name: hostdisk
+`)
+		tmpFile, err := os.CreateTemp("", "vm-hostdisk.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		vol := findVolume(pod, "hostdisk")
+		require.NotNil(t, vol, "hostdisk volume should be present in pod spec")
+		require.NotNil(t, vol.HostPath, "volume source should be hostPath")
+		require.Equal(t, "/var/lib/vms", vol.HostPath.Path)
+
+		mount := findMount(pod, "compute", "hostdisk")
+		require.NotNil(t, mount, "hostdisk should be mounted in compute container")
+	})
+}
+
 func TestForcePasst(t *testing.T) {
 	t.Run("force-passt replaces bindings", func(t *testing.T) {
 		vmYAML := []byte(`

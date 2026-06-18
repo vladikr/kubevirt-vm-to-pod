@@ -1,0 +1,58 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: fedora-vm
+spec:
+  running: true
+  template:
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: containerdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          - disk:
+              bus: virtio
+            name: datadisk
+          interfaces:
+          - masquerade: {}
+            name: default
+            ports:
+            - port: 2222
+          rng: {}
+        memory:
+          guest: 1024M
+        resources: {}
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - containerdisk:
+          image: quay.io/containerdisks/fedora:40
+        name: containerdisk
+      - cloudInitNoCloud:
+          userData: |-
+            #cloud-config
+            # 🧠 Clean drop-in file configuration
+            ssh_pwauth: true
+            write_files:
+              - path: /etc/ssh/sshd_config.d/custom-port.conf
+                permissions: '0600'
+                owner: root:root
+                content: |
+                  Port 2222
+
+            # 🧠 Clean, non-blocking execution sequence
+            runcmd:
+              - setenforce 0
+              - systemctl restart sshd
+            password: fedora
+            chpasswd: { expire: False }
+        name: cloudinitdisk
+      - persistentVolumeClaim:
+          claimName: test-vm-data
+        name: datadisk

@@ -32,6 +32,7 @@ import (
 type VMToPodTransformer struct {
 	ClusterConfig 		*virtconfig.ClusterConfig
 	TemplateSvc   		*services.TemplateService
+	pvcCache		cache.Indexer
 	LauncherImage 		string
 	InstancetypeFile 	string
 	PreferenceFile   	string
@@ -100,7 +101,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 			Phase: virtv1.KubeVirtPhaseDeploying,
 		},
 	}
-	kv.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{"ImageVolume"}
+	kv.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{"ImageVolume", "HostDisk"}
 
 	config, _, _ := testutils.NewFakeClusterConfigUsingKV(kv)
 
@@ -130,6 +131,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 	t := &VMToPodTransformer{
 		ClusterConfig: config,
 		TemplateSvc:   templateSvc,
+		pvcCache:      pvcCache,
 		LauncherImage: launcherImage,
 	}
 
@@ -165,6 +167,8 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 	if err := validateForStandalone(vm); err != nil {
 		return nil, err
 	}
+
+	t.stubPVCsForVM(vm)
 
 	if vm.ObjectMeta.Namespace == "" {
 		vm.ObjectMeta.Namespace = "default"
@@ -467,11 +471,6 @@ func validateForStandalone(vm *virtv1.VirtualMachine) error {
 	var warnings []string
 
 	for _, vol := range spec.Volumes {
-		if vol.PersistentVolumeClaim != nil {
-			errors = append(errors, fmt.Sprintf(
-				"volume %q uses PersistentVolumeClaim which requires Kubernetes storage. "+
-					"Use a containerDisk or mount a local file as a hostPath volume instead", vol.Name))
-		}
 		if vol.DataVolume != nil {
 			errors = append(errors, fmt.Sprintf(
 				"volume %q uses DataVolume which requires the CDI controller. "+
@@ -523,6 +522,37 @@ func populateInterfaceStatus(vmi *virtv1.VirtualMachineInstance) {
 			Name:             iface.Name,
 			PodInterfaceName: podIfaceName,
 		})
+	}
+}
+
+// stubPVCsForVM pre-populates the PVC cache with minimal stub objects for every
+// persistentVolumeClaim volume referenced in the VM spec. RenderLaunchManifest
+// looks up each PVC by namespace/name and fails if it is absent; in standalone
+// mode there is no Kubernetes API to provide real PVCs. The stubs carry enough
+// metadata for the template service to proceed: Filesystem volume mode and
+// ReadWriteOnce access, which is what a Podman named volume provides.
+func (t *VMToPodTransformer) stubPVCsForVM(vm *virtv1.VirtualMachine) {
+	ns := vm.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	filesystemMode := k8sv1.PersistentVolumeFilesystem
+	for _, vol := range vm.Spec.Template.Spec.Volumes {
+		if vol.PersistentVolumeClaim == nil {
+			continue
+		}
+		claimName := vol.PersistentVolumeClaim.ClaimName
+		pvc := &k8sv1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      claimName,
+				Namespace: ns,
+			},
+			Spec: k8sv1.PersistentVolumeClaimSpec{
+				AccessModes: []k8sv1.PersistentVolumeAccessMode{k8sv1.ReadWriteOnce},
+				VolumeMode:  &filesystemMode,
+			},
+		}
+		_ = t.pvcCache.Add(pvc)
 	}
 }
 
