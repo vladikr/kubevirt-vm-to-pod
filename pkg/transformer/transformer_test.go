@@ -456,6 +456,10 @@ spec:
 		require.True(t, ok, "Should have proxy-ports annotation")
 		require.Contains(t, annotation, "28080")
 		require.Contains(t, annotation, "15900")
+
+		// Check command includes both port flags
+		require.Contains(t, proxyContainer.Command, "-port=28080")
+		require.Contains(t, proxyContainer.Command, "-vnc-port=15900")
 	})
 
 	t.Run("custom ports are respected", func(t *testing.T) {
@@ -500,6 +504,10 @@ spec:
 		annotation := pod.Annotations["kubevirt-vm-to-pod/proxy-ports"]
 		require.Contains(t, annotation, "9999")
 		require.Contains(t, annotation, "5901")
+
+		// Check command includes custom port flags
+		require.Contains(t, proxyContainer.Command, "-port=9999")
+		require.Contains(t, proxyContainer.Command, "-vnc-port=5901")
 	})
 
 	t.Run("access proxies disabled", func(t *testing.T) {

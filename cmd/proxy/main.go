@@ -15,37 +15,53 @@ import (
 )
 
 var (
-	port       = flag.String("port", "8080", "Port to listen on")
-	socketDir  = flag.String("socket-dir", "/var/run/kubevirt-private", "Directory containing the virt-serial0 socket")
-	listenMode = flag.String("listen", "tcp", "Listen mode: tcp or unix (unix socket at /var/run/kubevirt-private/console-proxy.sock)")
-	socketName = "virt-serial0"
+	port           = flag.String("port", "8080", "Port to listen on (console)")
+	vncPort        = flag.String("vnc-port", "15900", "Port for VNC proxy")
+	socketDir      = flag.String("socket-dir", "/var/run/kubevirt-private", "Directory containing the virt-serial0 and virt-vnc sockets")
+	listenMode     = flag.String("listen", "tcp", "Listen mode: tcp or unix (unix socket at /var/run/kubevirt-private/console-proxy.sock)")
+	socketName     = "virt-serial0"
+	vncSocketName  = "virt-vnc"
 )
 
 func main() {
 	flag.Parse()
 
-	// Wait for the socket to appear (virt-launcher may need time to start)
-	var socketPath string
+	// Wait for the serial console socket to appear (virt-launcher may need time to start)
+	var consolePath string
 	for i := 0; i < 30; i++ {
 		var err error
-		socketPath, err = discoverSocketPath(*socketDir)
+		consolePath, err = discoverSocketPath(*socketDir, socketName)
 		if err == nil {
 			break
 		}
 		if i == 29 {
-			log.Fatalf("Failed to discover socket path after 30 attempts: %v", err)
+			log.Fatalf("Failed to discover console socket path after 30 attempts: %v", err)
 		}
-		log.Printf("Waiting for socket... (%v)", err)
+		log.Printf("Waiting for console socket... (%v)", err)
 		time.Sleep(2 * time.Second)
 	}
-	log.Printf("Using serial console socket: %s", socketPath)
+	log.Printf("Using serial console socket: %s", consolePath)
 
+	// Try to discover VNC socket (optional - not all VMs have VNC)
+	vncPath, err := discoverSocketPath(*socketDir, vncSocketName)
+	if err != nil {
+		log.Printf("VNC socket not found (VNC endpoint disabled): %v", err)
+	} else {
+		log.Printf("Using VNC socket: %s", vncPath)
+	}
+
+	// Register HTTP handlers
 	http.HandleFunc("/console", func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r, socketPath)
+		handler(w, r, consolePath)
 	})
 
+	if vncPath != "" {
+		http.HandleFunc("/vnc", func(w http.ResponseWriter, r *http.Request) {
+			handler(w, r, vncPath)
+		})
+	}
+
 	var ln net.Listener
-	var err error
 
 	if *listenMode == "unix" {
 		sockPath := filepath.Join(*socketDir, "console-proxy.sock")
@@ -61,15 +77,15 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to listen on port %s: %v", *port, err)
 		}
-		log.Printf("Listening on TCP port %s", *port)
+		log.Printf("Listening on TCP port %s (console and VNC on same port via /console and /vnc paths)", *port)
 	}
 
 	log.Fatal(http.Serve(ln, nil))
 }
 
-func discoverSocketPath(dir string) (string, error) {
+func discoverSocketPath(dir string, sockName string) (string, error) {
 	// Check if the socket exists directly in the directory
-	directPath := filepath.Join(dir, socketName)
+	directPath := filepath.Join(dir, sockName)
 	if _, err := os.Stat(directPath); err == nil {
 		return directPath, nil
 	}
@@ -83,7 +99,7 @@ func discoverSocketPath(dir string) (string, error) {
 	var subdirs []string
 	for _, f := range files {
 		if f.IsDir() {
-			subPath := filepath.Join(dir, f.Name(), socketName)
+			subPath := filepath.Join(dir, f.Name(), sockName)
 			if _, err := os.Stat(subPath); err == nil {
 				subdirs = append(subdirs, f.Name())
 			}
@@ -91,10 +107,10 @@ func discoverSocketPath(dir string) (string, error) {
 	}
 
 	if len(subdirs) != 1 {
-		return "", fmt.Errorf("expected 1 subdirectory with %s socket, found %d", socketName, len(subdirs))
+		return "", fmt.Errorf("expected 1 subdirectory with %s socket, found %d", sockName, len(subdirs))
 	}
 
-	return filepath.Join(dir, subdirs[0], socketName), nil
+	return filepath.Join(dir, subdirs[0], sockName), nil
 }
 
 func handler(w http.ResponseWriter, r *http.Request, socketPath string) {
