@@ -88,9 +88,9 @@ else
     echo_info "Podman dry-run validation skipped (may not be supported)"
 fi
 
-# Step 5: Test with force-passt
-echo_info "Test 4: Generate Pod with --force-passt..."
-"$BINARY" --vm-file="$VM_FILE" --force-passt > "$POD_YAML"
+# Step 5: Test with passt (default behavior, no flag needed)
+echo_info "Test 4: Generate Pod with passt networking (default)..."
+"$BINARY" --vm-file="$VM_FILE" > "$POD_YAML"
 
 if python3 -c "
 import yaml, json, sys
@@ -151,22 +151,52 @@ else
     echo_info "GPU device mount check skipped (GPU not in test VM)"
 fi
 
-# Step 7: Test with console proxy
-echo_info "Test 6: Generate Pod with --add-console-proxy..."
-"$BINARY" --vm-file="$VM_FILE" --add-console-proxy > "$POD_YAML"
+# Step 7: Test with access proxy (default behavior)
+echo_info "Test 6: Generate Pod with default access proxies..."
+"$BINARY" --vm-file="$VM_FILE" > "$POD_YAML"
 
-if grep -q "console-proxy" "$POD_YAML"; then
-    echo_success "Console proxy sidecar present"
+if grep -q "access-proxy" "$POD_YAML"; then
+    echo_success "Access proxy sidecar present by default"
 else
-    echo_error "Console proxy sidecar missing"
+    echo_error "Access proxy sidecar missing"
+    exit 1
+fi
+
+# Step 7b: Test disabling access proxies
+echo_info "Test 6b: Generate Pod with --add-access-proxies=false..."
+"$BINARY" --vm-file="$VM_FILE" --add-access-proxies=false > "$POD_YAML"
+
+if grep -q "access-proxy" "$POD_YAML"; then
+    echo_error "Access proxy sidecar should not be present when disabled"
+    exit 1
+fi
+echo_success "Access proxy correctly disabled"
+
+# Step 7c: Test custom proxy ports
+echo_info "Test 6c: Generate Pod with custom proxy ports..."
+"$BINARY" --vm-file="$VM_FILE" --proxy-port=9999 --vnc-proxy-port=5901 > "$POD_YAML"
+
+if grep -q "9999" "$POD_YAML" && grep -q "5901" "$POD_YAML"; then
+    echo_success "Custom proxy ports applied"
+else
+    echo_error "Custom proxy ports not found"
+    exit 1
+fi
+
+# Step 7d: Verify no hostPort
+echo_info "Test 6d: Verify no hostPort in proxy container..."
+if ! grep -q "hostPort" "$POD_YAML"; then
+    echo_success "No hostPort present in proxy container"
+else
+    echo_error "Unexpected hostPort found in proxy container"
     exit 1
 fi
 
 # Step 8: Test combined flags
-echo_info "Test 7: Generate Pod with all flags..."
-"$BINARY" --vm-file="$VM_FILE" --add-console-proxy --force-passt --mount-devices > "$POD_YAML"
+echo_info "Test 7: Generate Pod with combined flags..."
+"$BINARY" --vm-file="$VM_FILE" --mount-devices > "$POD_YAML"
 
-if grep -q "console-proxy" "$POD_YAML" && grep -q '"passt"' "$POD_YAML" && grep -q "/dev/kvm" "$POD_YAML"; then
+if grep -q "access-proxy" "$POD_YAML" && grep -q "/dev/kvm" "$POD_YAML"; then
     echo_success "All combined flags work correctly"
 else
     echo_error "Combined flags failed"
@@ -185,9 +215,12 @@ echo "  ✓ Pod YAML structure validation"
 echo "  ✓ Pod name (not generateName)"
 echo "  ✓ virt-launcher container"
 echo "  ✓ STANDALONE_VMI env var"
-echo "  ✓ --force-passt flag"
+echo "  ✓ Passt networking (default)"
 echo "  ✓ --mount-devices flag"
-echo "  ✓ --add-console-proxy flag"
+echo "  ✓ Access proxy (default enabled)"
+echo "  ✓ --add-access-proxies=false"
+echo "  ✓ Custom proxy ports"
+echo "  ✓ No hostPort in proxy"
 echo "  ✓ All combined flags"
 echo ""
 echo_info "To run full functional test with podman kube play:"

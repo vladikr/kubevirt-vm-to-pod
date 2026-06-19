@@ -25,8 +25,10 @@ var (
 	instancetypeFile string
 	preferenceFile   string
 	addConsoleProxy  bool
+	addAccessProxies bool
 	proxyImage       string
 	proxyPort        int
+	vncProxyPort     int
 	noPasst          bool
 	mountDevices     bool
 )
@@ -57,18 +59,41 @@ or piped through stdin:
 			if launcherImage == "" {
 				launcherImage = "quay.io/kubevirt/virt-launcher:v1.8.0"
 			}
-			if addConsoleProxy && proxyImage == "" {
+
+			// Resolve proxy flags with backward compatibility
+			effectiveAddProxies := addAccessProxies
+			useLegacyPath := false
+
+			if cmd.Flags().Changed("add-console-proxy") && !cmd.Flags().Changed("add-access-proxies") {
+				fmt.Fprintf(os.Stderr, "Warning: --add-console-proxy is deprecated, use --add-access-proxies instead\n")
+				effectiveAddProxies = addConsoleProxy
+				useLegacyPath = true
+			}
+
+			if effectiveAddProxies && proxyImage == "" {
 				proxyImage = "quay.io/vladikr/kubevirt-console-proxy:latest"
 			}
 
-			t := transformer.NewVMToPodTransformer(
-				transformer.WithLauncherImage(launcherImage),
-				transformer.WithInstancetypeFile(instancetypeFile),
-				transformer.WithPreferenceFile(preferenceFile),
-				transformer.WithAddConsoleProxy(addConsoleProxy, proxyImage, proxyPort),
-				transformer.WithForcePasst(!noPasst),
-				transformer.WithMountDevices(mountDevices),
-			)
+			var t *transformer.VMToPodTransformer
+			if useLegacyPath {
+				t = transformer.NewVMToPodTransformer(
+					transformer.WithLauncherImage(launcherImage),
+					transformer.WithInstancetypeFile(instancetypeFile),
+					transformer.WithPreferenceFile(preferenceFile),
+					transformer.WithAddConsoleProxy(addConsoleProxy, proxyImage, proxyPort),
+					transformer.WithForcePasst(!noPasst),
+					transformer.WithMountDevices(mountDevices),
+				)
+			} else {
+				t = transformer.NewVMToPodTransformer(
+					transformer.WithLauncherImage(launcherImage),
+					transformer.WithInstancetypeFile(instancetypeFile),
+					transformer.WithPreferenceFile(preferenceFile),
+					transformer.WithAddAccessProxies(effectiveAddProxies, proxyImage, proxyPort, vncProxyPort),
+					transformer.WithForcePasst(!noPasst),
+					transformer.WithMountDevices(mountDevices),
+				)
+			}
 
 			var pod *k8sv1.Pod
 			var err error
@@ -101,9 +126,11 @@ or piped through stdin:
 	rootCmd.Flags().StringVar(&launcherImage, "launcher-image", "", "Virt-launcher image (default: quay.io/kubevirt/virt-launcher:v1.8.0)")
 	rootCmd.Flags().StringVar(&instancetypeFile, "instancetype-file", "", "Path to Instancetype YAML file (optional)")
 	rootCmd.Flags().StringVar(&preferenceFile, "preference-file", "", "Path to Preference YAML file (optional)")
-	rootCmd.Flags().BoolVar(&addConsoleProxy, "add-console-proxy", false, "Add console proxy sidecar to the Pod")
+	rootCmd.Flags().BoolVar(&addConsoleProxy, "add-console-proxy", false, "Add console proxy sidecar to the Pod (deprecated, use --add-access-proxies)")
+	rootCmd.Flags().BoolVar(&addAccessProxies, "add-access-proxies", true, "Add access proxy sidecar with console and VNC ports (default: true)")
 	rootCmd.Flags().StringVar(&proxyImage, "proxy-image", "", "Console proxy image (default: quay.io/vladikr/kubevirt-console-proxy:latest)")
-	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 8080, "Port for the console proxy to listen on")
+	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 28080, "Port for the console proxy to listen on")
+	rootCmd.Flags().IntVar(&vncProxyPort, "vnc-proxy-port", 15900, "Port for the VNC proxy to listen on")
 	rootCmd.Flags().BoolVar(&noPasst, "no-passt", false, "Preserve original network bindings instead of converting to Passt (requires CNI plugins)")
 	rootCmd.Flags().BoolVar(&mountDevices, "mount-devices", true, "Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution")
 
