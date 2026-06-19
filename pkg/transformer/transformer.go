@@ -224,6 +224,9 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 
 	cleanupForStandalone(pod, vmi)
 
+	// Add persistence warning annotations for volumes that require special setup
+	addPersistenceWarnings(pod, vm)
+
 	// Populate VMI interface status with PodInterfaceName.
 	// In Kubernetes, virt-handler sets this; for standalone mode we must do it ourselves.
 	populateInterfaceStatus(vmi)
@@ -474,7 +477,9 @@ func validateForStandalone(vm *virtv1.VirtualMachine) error {
 		if vol.DataVolume != nil {
 			errors = append(errors, fmt.Sprintf(
 				"volume %q uses DataVolume which requires the CDI controller. "+
-					"Pre-download the image and use a containerDisk instead", vol.Name))
+					"Recommended alternatives for standalone mode:\n"+
+					"    - Use hostDisk (for local disk images on the host filesystem)\n"+
+					"    - Use persistentVolumeClaim (becomes a Podman named volume)", vol.Name))
 		}
 		if vol.ConfigMap != nil {
 			errors = append(errors, fmt.Sprintf(
@@ -590,6 +595,43 @@ func cleanupForStandalone(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
 		}
 	}
 	pod.Spec.InitContainers = keptInit
+}
+
+func addPersistenceWarnings(pod *k8sv1.Pod, vm *virtv1.VirtualMachine) {
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+
+	spec := vm.Spec.Template.Spec
+	var warnings []string
+
+	// Check for PVC volumes
+	hasPVC := false
+	for _, vol := range spec.Volumes {
+		if vol.PersistentVolumeClaim != nil {
+			hasPVC = true
+			break
+		}
+	}
+	if hasPVC {
+		warnings = append(warnings, "PVC volumes: In standalone mode, persistentVolumeClaim volumes become local Podman named volumes. They persist across pod restarts on THIS host only, but will NOT survive if you move the Pod to another machine or reinstall Podman.")
+	}
+
+	// Check for hostDisk volumes
+	hasHostDisk := false
+	for _, vol := range spec.Volumes {
+		if vol.HostDisk != nil {
+			hasHostDisk = true
+			break
+		}
+	}
+	if hasHostDisk {
+		warnings = append(warnings, "hostDisk volumes: The specified disk image files must exist on the host filesystem at the paths defined in the VM spec. For DiskOrCreate type, the file will be created if missing.")
+	}
+
+	if len(warnings) > 0 {
+		pod.Annotations["kubevirt-vm-to-pod/persistence-warning"] = strings.Join(warnings, " | ")
+	}
 }
 
 var codec = serializer.NewCodecFactory(runtime.NewScheme()).UniversalDeserializer()

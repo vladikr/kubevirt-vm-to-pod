@@ -498,3 +498,184 @@ spec:
 		require.Nil(t, vmi.Spec.Domain.Devices.Interfaces[0].PasstBinding, "Should not have Passt binding")
 	})
 }
+
+func TestDataVolumeError(t *testing.T) {
+	t.Run("DataVolume volume produces clear error with alternatives", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-datavolume
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: datadisk
+      volumes:
+      - dataVolume:
+          name: test-dv
+        name: datadisk
+`)
+		tmpFile, err := os.CreateTemp("", "vm-datavolume.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		_, err = NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.Error(t, err, "Should fail with DataVolume error")
+		require.Contains(t, err.Error(), "DataVolume")
+		require.Contains(t, err.Error(), "hostDisk")
+		require.Contains(t, err.Error(), "persistentVolumeClaim")
+		require.Contains(t, err.Error(), "Recommended alternatives")
+	})
+}
+
+func TestPersistenceWarnings(t *testing.T) {
+	t.Run("PVC volume adds persistence warning annotation", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-pvc
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: datadisk
+      volumes:
+      - persistentVolumeClaim:
+          claimName: test-vm-data
+        name: datadisk
+`)
+		tmpFile, err := os.CreateTemp("", "vm-pvc-warning.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		warning, ok := pod.Annotations["kubevirt-vm-to-pod/persistence-warning"]
+		require.True(t, ok, "Should have persistence warning annotation")
+		require.Contains(t, warning, "PVC volumes")
+		require.Contains(t, warning, "Podman named volumes")
+		require.Contains(t, warning, "THIS host only")
+	})
+
+	t.Run("hostDisk volume adds persistence warning annotation", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-hostdisk
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: hostdisk
+      volumes:
+      - hostDisk:
+          path: /var/lib/vms/disk.img
+          type: DiskOrCreate
+          capacity: 1Gi
+        name: hostdisk
+`)
+		tmpFile, err := os.CreateTemp("", "vm-hostdisk-warning.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		warning, ok := pod.Annotations["kubevirt-vm-to-pod/persistence-warning"]
+		require.True(t, ok, "Should have persistence warning annotation")
+		require.Contains(t, warning, "hostDisk volumes")
+		require.Contains(t, warning, "exist on the host filesystem")
+		require.Contains(t, warning, "DiskOrCreate")
+	})
+
+	t.Run("VM with both PVC and hostDisk adds combined warning", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-both
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: pvc-disk
+          - disk:
+              bus: virtio
+            name: host-disk
+      volumes:
+      - persistentVolumeClaim:
+          claimName: test-pvc
+        name: pvc-disk
+      - hostDisk:
+          path: /data/disk.img
+          type: Disk
+        name: host-disk
+`)
+		tmpFile, err := os.CreateTemp("", "vm-both.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		warning, ok := pod.Annotations["kubevirt-vm-to-pod/persistence-warning"]
+		require.True(t, ok, "Should have persistence warning annotation")
+		require.Contains(t, warning, "PVC volumes")
+		require.Contains(t, warning, "hostDisk volumes")
+		require.Contains(t, warning, "|") // Separator between warnings
+	})
+
+	t.Run("VM without persistent volumes has no warning annotation", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm-ephemeral
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+		tmpFile, err := os.CreateTemp("", "vm-ephemeral.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		_, ok := pod.Annotations["kubevirt-vm-to-pod/persistence-warning"]
+		require.False(t, ok, "Should not have persistence warning annotation for ephemeral VM")
+	})
+}
