@@ -10,11 +10,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"path/filepath"
+
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	k8sv1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
+	"github.com/vladikr/kubevirt-vm-to-pod/pkg/quadlet"
 	"github.com/vladikr/kubevirt-vm-to-pod/pkg/transformer"
 )
 
@@ -29,6 +32,7 @@ var (
 	proxyPort        int
 	noPasst          bool
 	mountDevices     bool
+	quadletDir       string
 )
 
 func main() {
@@ -51,8 +55,8 @@ or piped through stdin:
 				vmFile = args[0]
 			}
 
-			if output != "yaml" && output != "json" {
-				return fmt.Errorf("output must be 'yaml' or 'json'")
+			if output != "yaml" && output != "json" && output != "quadlet" {
+				return fmt.Errorf("output must be 'yaml', 'json', or 'quadlet'")
 			}
 			if launcherImage == "" {
 				launcherImage = "quay.io/kubevirt/virt-launcher:v1.8.0"
@@ -81,6 +85,10 @@ or piped through stdin:
 				return fmt.Errorf("failed to transform VM to Pod: %v", err)
 			}
 
+			if output == "quadlet" {
+				return writeQuadletFiles(pod, quadletDir)
+			}
+
 			var outputBytes []byte
 			if output == "yaml" {
 				outputBytes, err = yaml.Marshal(pod)
@@ -106,6 +114,7 @@ or piped through stdin:
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 8080, "Port for the console proxy to listen on")
 	rootCmd.Flags().BoolVar(&noPasst, "no-passt", false, "Preserve original network bindings instead of converting to Passt (requires CNI plugins)")
 	rootCmd.Flags().BoolVar(&mountDevices, "mount-devices", true, "Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution")
+	rootCmd.Flags().StringVar(&quadletDir, "quadlet-dir", ".", "Directory to write Quadlet files to (used with --output=quadlet)")
 
 	consoleCmd := &cobra.Command{
 		Use:   "console <vm-name>",
@@ -158,6 +167,42 @@ or piped through stdin:
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func writeQuadletFiles(pod *k8sv1.Pod, dir string) error {
+	vmName := pod.Name
+	if vmName == "" {
+		vmName = "kubevirt-vm"
+	}
+
+	podYAMLFilename := vmName + "-pod.yaml"
+	kubeFilename := vmName + ".kube"
+
+	podYAMLBytes, err := yaml.Marshal(pod)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Pod: %v", err)
+	}
+
+	podYAMLPath := filepath.Join(dir, podYAMLFilename)
+	if err := os.WriteFile(podYAMLPath, podYAMLBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write Pod YAML: %v", err)
+	}
+	fmt.Fprintf(os.Stderr, "Wrote %s\n", podYAMLPath)
+
+	kubeContent := quadlet.Generate(pod, podYAMLFilename)
+	kubePath := filepath.Join(dir, kubeFilename)
+	if err := os.WriteFile(kubePath, []byte(kubeContent), 0644); err != nil {
+		return fmt.Errorf("failed to write Quadlet file: %v", err)
+	}
+	fmt.Fprintf(os.Stderr, "Wrote %s\n", kubePath)
+
+	fmt.Fprintf(os.Stderr, "\nTo install as a user systemd service:\n")
+	fmt.Fprintf(os.Stderr, "  mkdir -p ~/.config/containers/systemd\n")
+	fmt.Fprintf(os.Stderr, "  cp %s %s ~/.config/containers/systemd/\n", podYAMLPath, kubePath)
+	fmt.Fprintf(os.Stderr, "  systemctl --user daemon-reload\n")
+	fmt.Fprintf(os.Stderr, "  systemctl --user start %s\n", vmName)
+
+	return nil
 }
 
 func runAttach(socketPath string) error {

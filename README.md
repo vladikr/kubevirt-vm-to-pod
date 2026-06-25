@@ -13,6 +13,7 @@ Convert KubeVirt VirtualMachine definitions into standalone Pods that can run ou
 - ✅ PVC and hostDisk volume support for persistent storage
 - ✅ Passt network binding by default for standalone execution
 - ✅ Mount KVM devices for hardware virtualization
+- ✅ Quadlet output for systemd-managed VMs
 - ✅ Compatible with Podman kube play
 - ✅ Uses KubeVirt v1.8.0 APIs
 
@@ -88,7 +89,8 @@ podman kube play pod.yaml
 | `--preference-file` | Path to VirtualMachinePreference YAML file (optional) | - |
 | `--proxy-image` | Console proxy container image | `quay.io/vladikr/kubevirt-console-proxy:latest` |
 | `--proxy-port` | Port for console proxy to listen on | `8080` |
-| `--output` | Output format: yaml or json | `yaml` |
+| `--output` | Output format: yaml, json, or quadlet | `yaml` |
+| `--quadlet-dir` | Directory to write Quadlet files to (used with `--output=quadlet`) | `.` |
 
 ## Usage Examples
 
@@ -265,6 +267,35 @@ volumes:
 The disk image file is accessed directly on the host filesystem. With `DiskOrCreate`, it will be created if it doesn't exist.
 
 **Persistence warnings:** When PVC or hostDisk volumes are present, the generated Pod includes a `kubevirt-vm-to-pod/persistence-warning` annotation explaining the standalone persistence semantics.
+
+### Quadlet Output (`--output=quadlet`)
+
+Generates Podman Quadlet files for running the VM as a systemd service — the recommended way to manage persistent containerized workloads with Podman.
+
+```bash
+./kubevirt-vm-to-pod myvm.yaml --output=quadlet --quadlet-dir=./output/
+```
+
+This produces two files:
+- `<vm-name>-pod.yaml` — the Pod YAML
+- `<vm-name>.kube` — the Quadlet unit file referencing the Pod YAML
+
+**Install as a user systemd service:**
+```bash
+mkdir -p ~/.config/containers/systemd
+cp ./output/*-pod.yaml ./output/*.kube ~/.config/containers/systemd/
+systemctl --user daemon-reload
+systemctl --user start <vm-name>
+```
+
+The VM will start automatically on login and restart on failure. Use `systemctl --user stop <vm-name>` to stop it.
+
+**For system-wide services** (runs at boot, no login required):
+```bash
+sudo cp ./output/*-pod.yaml ./output/*.kube /etc/containers/systemd/
+sudo systemctl daemon-reload
+sudo systemctl start <vm-name>
+```
 
 ## Sample VirtualMachine YAML
 
