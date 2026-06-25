@@ -10,6 +10,7 @@ Convert KubeVirt VirtualMachine definitions into standalone Pods that can run ou
 - ✅ Converts VM to standalone Pod YAML
 - ✅ Supports Instancetype and Preference expansion
 - ✅ Optional console proxy sidecar for VM access
+- ✅ PVC and hostDisk volume support for persistent storage
 - ✅ Passt network binding by default for standalone execution
 - ✅ Mount KVM devices for hardware virtualization
 - ✅ Compatible with Podman kube play
@@ -229,6 +230,42 @@ curl http://localhost:8080/console
 # Or use VNC/serial console clients
 ```
 
+### Volume Support
+
+The tool supports several KubeVirt volume types for standalone execution:
+
+| Volume Type | Standalone Behavior | Notes |
+|-------------|-------------------|-------|
+| `containerDisk` | ✅ Works as-is | Pulled as a container image |
+| `cloudInitNoCloud` | ✅ Works as-is | Inline user-data supported |
+| `cloudInitConfigDrive` | ✅ Works as-is | Inline user-data supported |
+| `persistentVolumeClaim` | ✅ Podman named volume | Data persists on this host only |
+| `hostDisk` | ✅ Host filesystem path | Translated to hostPath mount |
+| `dataVolume` | ❌ Not supported | Requires CDI controller — use hostDisk or PVC instead |
+| `configMap` / `secret` | ❌ Not supported | Use cloudInit with inline data instead |
+
+**Persistent storage example (PVC):**
+```yaml
+volumes:
+- persistentVolumeClaim:
+    claimName: my-vm-data
+  name: datadisk
+```
+In standalone mode, this becomes a Podman named volume. Data persists across pod restarts on the same host but does not transfer to other machines.
+
+**Persistent storage example (hostDisk):**
+```yaml
+volumes:
+- hostDisk:
+    path: /var/lib/vms/disk.img
+    type: DiskOrCreate
+    capacity: 10Gi
+  name: datadisk
+```
+The disk image file is accessed directly on the host filesystem. With `DiskOrCreate`, it will be created if it doesn't exist.
+
+**Persistence warnings:** When PVC or hostDisk volumes are present, the generated Pod includes a `kubevirt-vm-to-pod/persistence-warning` annotation explaining the standalone persistence semantics.
+
 ## Sample VirtualMachine YAML
 
 ```yaml
@@ -337,8 +374,9 @@ DEV_MODE=true make podman-build-dev
 4. **Generate VMI** - Creates VirtualMachineInstance from VM template
 5. **Render Pod** - Uses KubeVirt's TemplateService to create Pod spec
 6. **Apply Options** - Adds console proxy, device mounts, networking changes
-7. **Embed VMI** - Injects VMI JSON into STANDALONE_VMI env var
-8. **Output** - Generates final Pod YAML
+7. **Add Warnings** - Annotates persistence semantics for PVC/hostDisk volumes
+8. **Embed VMI** - Injects VMI JSON into STANDALONE_VMI env var
+9. **Output** - Generates final Pod YAML
 
 The generated Pod contains:
 - **compute container**: virt-launcher running the VM
@@ -385,6 +423,8 @@ VirtualMachine YAML
 
 - **No live migration**: Pods are standalone and don't support migration
 - **No KubeVirt controllers**: No automatic reconciliation or state management
+- **No DataVolumes**: DataVolume volumes require the CDI controller — use hostDisk or PVC instead
+- **PVC locality**: PVC volumes become local Podman named volumes, not portable across hosts
 - **Limited networking**: Best with pod networking or Passt binding
 - **Device access**: Requires `/dev/kvm` access on host for hardware virtualization
 - **Dedicated CPUs**: VMs with `dedicatedCpuPlacement` need manual CPU pinning via container runtime (e.g., `podman run --cpuset-cpus`)
