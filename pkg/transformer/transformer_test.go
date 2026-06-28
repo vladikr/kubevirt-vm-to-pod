@@ -499,6 +499,78 @@ spec:
 	})
 }
 
+func TestVMHealthCheck(t *testing.T) {
+	t.Run("adds liveness probe to compute container", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		var compute k8sv1.Container
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "compute" {
+				compute = c
+				break
+			}
+		}
+		require.NotNil(t, compute.LivenessProbe, "compute container should have a liveness probe")
+		require.NotNil(t, compute.LivenessProbe.Exec, "liveness probe should use exec")
+		require.Contains(t, compute.LivenessProbe.Exec.Command[2], "virsh domstate default_testvm")
+		require.Contains(t, compute.LivenessProbe.Exec.Command[2], "grep -q running")
+		require.Equal(t, int32(60), compute.LivenessProbe.InitialDelaySeconds)
+		require.Equal(t, int32(10), compute.LivenessProbe.PeriodSeconds)
+	})
+
+	t.Run("uses correct namespace in domain name", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+  namespace: mynamespace
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		var compute k8sv1.Container
+		for _, c := range pod.Spec.Containers {
+			if c.Name == "compute" {
+				compute = c
+				break
+			}
+		}
+		require.Contains(t, compute.LivenessProbe.Exec.Command[2], "virsh domstate mynamespace_testvm")
+	})
+}
+
 func TestDataVolumeError(t *testing.T) {
 	t.Run("DataVolume volume produces clear error with alternatives", func(t *testing.T) {
 		vmYAML := []byte(`

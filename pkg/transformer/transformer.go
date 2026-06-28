@@ -222,6 +222,8 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 		mountHostDevices(pod, vmi)
 	}
 
+	addVMHealthCheck(pod, vm)
+
 	cleanupForStandalone(pod, vmi)
 
 	// Add persistence warning annotations for volumes that require special setup
@@ -381,6 +383,33 @@ func mountDevice(pod *k8sv1.Pod, volumeName, devicePath string, pathType *k8sv1.
 				Name:      volumeName,
 				MountPath: devicePath,
 			})
+			break
+		}
+	}
+}
+
+func addVMHealthCheck(pod *k8sv1.Pod, vm *virtv1.VirtualMachine) {
+	ns := vm.Namespace
+	if ns == "" {
+		ns = "default"
+	}
+	domainName := fmt.Sprintf("%s_%s", ns, vm.Name)
+
+	for i, c := range pod.Spec.Containers {
+		if c.Name == "compute" {
+			pod.Spec.Containers[i].LivenessProbe = &k8sv1.Probe{
+				ProbeHandler: k8sv1.ProbeHandler{
+					Exec: &k8sv1.ExecAction{
+						Command: []string{"sh", "-c",
+							fmt.Sprintf("virsh domstate %s | grep -q running", domainName),
+						},
+					},
+				},
+				InitialDelaySeconds: 60,
+				PeriodSeconds:       10,
+				TimeoutSeconds:      5,
+				FailureThreshold:    3,
+			}
 			break
 		}
 	}

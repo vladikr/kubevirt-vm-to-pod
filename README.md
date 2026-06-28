@@ -13,6 +13,7 @@ Convert KubeVirt VirtualMachine definitions into standalone Pods that can run ou
 - ✅ PVC and hostDisk volume support for persistent storage
 - ✅ Passt network binding by default for standalone execution
 - ✅ Mount KVM devices for hardware virtualization
+- ✅ VM health checks for status monitoring via `podman events`
 - ✅ Compatible with Podman kube play
 - ✅ Uses KubeVirt v1.8.0 APIs
 
@@ -229,6 +230,22 @@ Adds a console proxy sidecar container for accessing the VM console.
 curl http://localhost:8080/console
 # Or use VNC/serial console clients
 ```
+
+### VM Health Checks
+
+The generated Pod includes a liveness probe on the compute container that monitors the VM domain state via `virsh`. Podman translates this into a container health check, so VM status is visible through standard podman tooling.
+
+**Monitor VM health via podman events:**
+```bash
+podman events --filter event=health_status
+```
+
+**Check health status directly:**
+```bash
+podman inspect --format '{{.State.Health.Status}}' virt-launcher-myvm-compute
+```
+
+The health check runs `virsh domstate` every 10 seconds (after a 60-second initial delay). If the VM crashes or shuts down, the container is marked unhealthy and a `health_status` event is emitted — integrating with existing podman monitoring workflows.
 
 ### Volume Support
 
