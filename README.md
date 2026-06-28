@@ -233,19 +233,32 @@ curl http://localhost:8080/console
 
 ### VM Health Checks
 
-The generated Pod includes a liveness probe on the compute container that monitors the VM domain state via `virsh`. Podman translates this into a container health check, so VM status is visible through standard podman tooling.
+The generated Pod includes a liveness probe on the compute container that monitors the VM domain state via `virsh`. Podman translates this into a container health check, so VM status is visible through standard podman tooling — no sidecar or extra processes needed.
 
-**Monitor VM health via podman events:**
+**Check health status of a single VM:**
 ```bash
-podman events --filter event=health_status
+$ podman inspect --format '{{.State.Health.Status}}' virt-launcher-myvm-compute
+healthy
 ```
 
-**Check health status directly:**
+**Watch all VM health events in real time:**
 ```bash
-podman inspect --format '{{.State.Health.Status}}' virt-launcher-myvm-compute
+$ podman events --filter event=health_status
+2026-06-27 20:51:33 container health_status 8d1aa790 (name=virt-launcher-myvm-compute, health_status=healthy, vm.kubevirt.io/name=myvm)
+2026-06-27 20:52:06 container health_status 8d1aa790 (name=virt-launcher-myvm-compute, health_status=unhealthy, vm.kubevirt.io/name=myvm)
 ```
 
-The health check runs `virsh domstate` every 10 seconds (after a 60-second initial delay). If the VM crashes or shuts down, the container is marked unhealthy and a `health_status` event is emitted — integrating with existing podman monitoring workflows.
+**Filter events for a specific VM:**
+```bash
+podman events --filter event=health_status --filter container=virt-launcher-myvm-compute
+```
+
+**List all VMs with their health status:**
+```bash
+podman ps --filter label=vm.kubevirt.io/name --format "table {{.Names}}\t{{.Status}}"
+```
+
+The health check runs `virsh domstate` every 10 seconds (after a 60-second initial delay). When a VM is running, the container is `healthy`. If the VM crashes or shuts down, the container transitions to `unhealthy` and podman emits a `health_status` event — integrating directly with existing podman monitoring workflows.
 
 ### Volume Support
 
