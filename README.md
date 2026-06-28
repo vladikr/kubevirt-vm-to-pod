@@ -88,6 +88,7 @@ podman kube play pod.yaml
 | `--preference-file` | Path to VirtualMachinePreference YAML file (optional) | - |
 | `--proxy-image` | Console proxy container image | `quay.io/vladikr/kubevirt-console-proxy:latest` |
 | `--proxy-port` | Port for console proxy to listen on | `8080` |
+| `--notify-socket-dir` | Host directory to expose KubeVirt notify socket for VM event monitoring | - |
 | `--output` | Output format: yaml or json | `yaml` |
 
 ## Usage Examples
@@ -228,6 +229,49 @@ Adds a console proxy sidecar container for accessing the VM console.
 # After starting the Pod
 curl http://localhost:8080/console
 # Or use VNC/serial console clients
+```
+
+### VM Event Monitoring (`--notify-socket-dir`)
+
+Exposes the KubeVirt domain notify socket on the host, allowing an external monitoring service to receive VM lifecycle events (started, stopped, crashed, paused, etc.) in real time via gRPC.
+
+```bash
+./kubevirt-vm-to-pod myvm.yaml --notify-socket-dir=/tmp/notify/myvm > pod.yaml
+```
+
+Virt-launcher inside the container connects to `domain-notify-pipe.sock` in this directory and sends events as they happen. Your monitoring service listens on that socket before starting the pod.
+
+**Protocol details:**
+
+The notify socket uses gRPC with two services:
+
+1. **Version negotiation** — `NotifyInfo.Info()` returns `{supportedNotifyVersions: [1]}`
+2. **Event handling** — `Notify.HandleDomainEvent(DomainEventRequest)` receives:
+   - `eventType`: `"Added"`, `"Modified"`, `"Deleted"`, or `"Error"`
+   - `domainJSON`: VM domain state as JSON (includes lifecycle status, reason, interfaces)
+   - `statusJSON`: error details (only when `eventType == "Error"`)
+
+The proto definitions are available at `kubevirt.io/kubevirt/pkg/handler-launcher-com/notify/v1/` and `notify/info/`.
+
+**Minimal Go listener example:**
+```go
+import (
+    notifyv1 "kubevirt.io/kubevirt/pkg/handler-launcher-com/notify/v1"
+    notifyinfo "kubevirt.io/kubevirt/pkg/handler-launcher-com/notify/info"
+)
+
+type handler struct{}
+
+func (h *handler) HandleDomainEvent(ctx context.Context, req *notifyv1.DomainEventRequest) (*notifyv1.Response, error) {
+    log.Printf("Event: type=%s domain=%s", req.EventType, string(req.DomainJSON))
+    return &notifyv1.Response{Success: true}, nil
+}
+
+func (h *handler) HandleK8SEvent(ctx context.Context, req *notifyv1.K8SEventRequest) (*notifyv1.Response, error) {
+    return &notifyv1.Response{Success: true}, nil
+}
+
+// Register both services on a gRPC server listening on domain-notify-pipe.sock
 ```
 
 ### Volume Support
