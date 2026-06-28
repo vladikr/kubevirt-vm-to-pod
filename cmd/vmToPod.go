@@ -29,6 +29,7 @@ var (
 	proxyPort        int
 	noPasst          bool
 	mountDevices     bool
+	notifySocketDir  string
 )
 
 func main() {
@@ -68,6 +69,7 @@ or piped through stdin:
 				transformer.WithAddConsoleProxy(addConsoleProxy, proxyImage, proxyPort),
 				transformer.WithForcePasst(!noPasst),
 				transformer.WithMountDevices(mountDevices),
+				transformer.WithNotifySocketDir(notifySocketDir),
 			)
 
 			var pod *k8sv1.Pod
@@ -106,6 +108,7 @@ or piped through stdin:
 	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 8080, "Port for the console proxy to listen on")
 	rootCmd.Flags().BoolVar(&noPasst, "no-passt", false, "Preserve original network bindings instead of converting to Passt (requires CNI plugins)")
 	rootCmd.Flags().BoolVar(&mountDevices, "mount-devices", true, "Mount KVM devices (/dev/kvm, /dev/vhost-net, /dev/net/tun) for standalone execution")
+	rootCmd.Flags().StringVar(&notifySocketDir, "notify-socket-dir", "", "Host directory to expose the KubeVirt notify socket for VM event monitoring")
 
 	consoleCmd := &cobra.Command{
 		Use:   "console <vm-name>",

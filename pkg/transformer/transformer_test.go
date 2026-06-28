@@ -499,6 +499,83 @@ spec:
 	})
 }
 
+func TestNotifySocketExposure(t *testing.T) {
+	findVolume := func(pod *k8sv1.Pod, name string) *k8sv1.Volume {
+		for i := range pod.Spec.Volumes {
+			if pod.Spec.Volumes[i].Name == name {
+				return &pod.Spec.Volumes[i]
+			}
+		}
+		return nil
+	}
+
+	t.Run("replaces public emptyDir with hostPath", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer(WithNotifySocketDir("/tmp/notify/testvm")).Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		vol := findVolume(pod, "public")
+		require.NotNil(t, vol)
+		require.NotNil(t, vol.HostPath, "public volume should be hostPath when notify socket is enabled")
+		require.Equal(t, "/tmp/notify/testvm", vol.HostPath.Path)
+
+		// Check init container for permissions fix
+		found := false
+		for _, c := range pod.Spec.InitContainers {
+			if c.Name == "fix-notify-permissions" {
+				found = true
+				require.Contains(t, c.Command[2], "chmod 777 /var/run/kubevirt")
+				break
+			}
+		}
+		require.True(t, found, "should have fix-notify-permissions init container")
+	})
+
+	t.Run("disabled keeps emptyDir", func(t *testing.T) {
+		vmYAML := []byte(`
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: testvm
+spec:
+  template:
+    spec:
+      domain:
+        devices: {}
+      volumes: []
+`)
+		tmpFile, err := os.CreateTemp("", "vm.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+		_, err = tmpFile.Write(vmYAML)
+		require.NoError(t, err)
+
+		pod, err := NewVMToPodTransformer().Transform(tmpFile.Name())
+		require.NoError(t, err)
+
+		vol := findVolume(pod, "public")
+		require.NotNil(t, vol)
+		require.Nil(t, vol.HostPath, "public volume should remain emptyDir when notify socket is not enabled")
+	})
+}
+
 func TestDataVolumeError(t *testing.T) {
 	t.Run("DataVolume volume produces clear error with alternatives", func(t *testing.T) {
 		vmYAML := []byte(`

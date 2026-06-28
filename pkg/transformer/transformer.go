@@ -41,6 +41,7 @@ type VMToPodTransformer struct {
 	ProxyPort       	int
 	ForcePasst      	bool
 	MountDevices    	bool
+	NotifySocketDir		string
 }
 
 type TransformerOption func(*VMToPodTransformer)
@@ -80,6 +81,12 @@ func WithForcePasst(enabled bool) TransformerOption {
 func WithMountDevices(enabled bool) TransformerOption {
 	return func(t *VMToPodTransformer) {
 		t.MountDevices = enabled
+	}
+}
+
+func WithNotifySocketDir(dir string) TransformerOption {
+	return func(t *VMToPodTransformer) {
+		t.NotifySocketDir = dir
 	}
 }
 
@@ -220,6 +227,10 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 
 	if t.MountDevices {
 		mountHostDevices(pod, vmi)
+	}
+
+	if t.NotifySocketDir != "" {
+		exposeNotifySocket(pod, t.NotifySocketDir)
 	}
 
 	cleanupForStandalone(pod, vmi)
@@ -384,6 +395,39 @@ func mountDevice(pod *k8sv1.Pod, volumeName, devicePath string, pathType *k8sv1.
 			break
 		}
 	}
+}
+
+func exposeNotifySocket(pod *k8sv1.Pod, hostDir string) {
+	hostPathDir := k8sv1.HostPathDirectoryOrCreate
+
+	for i, v := range pod.Spec.Volumes {
+		if v.Name == "public" {
+			pod.Spec.Volumes[i].VolumeSource = k8sv1.VolumeSource{
+				HostPath: &k8sv1.HostPathVolumeSource{
+					Path: hostDir,
+					Type: &hostPathDir,
+				},
+			}
+			break
+		}
+	}
+
+	// The hostPath is created with root ownership. Virt-launcher runs as UID 107
+	// and needs to write to this directory. Prepend an init container to fix permissions.
+	nonRoot := false
+	uid := int64(0)
+	pod.Spec.InitContainers = append([]k8sv1.Container{{
+		Name:    "fix-notify-permissions",
+		Image:   pod.Spec.Containers[0].Image,
+		Command: []string{"sh", "-c", "chmod 777 /var/run/kubevirt"},
+		VolumeMounts: []k8sv1.VolumeMount{
+			{Name: "public", MountPath: "/var/run/kubevirt"},
+		},
+		SecurityContext: &k8sv1.SecurityContext{
+			RunAsUser:    &uid,
+			RunAsNonRoot: &nonRoot,
+		},
+	}}, pod.Spec.InitContainers...)
 }
 
 func detectGPUVendor(deviceName string) string {
