@@ -608,8 +608,7 @@ func cleanupForStandalone(pod *k8sv1.Pod, vmi *virtv1.VirtualMachineInstance) {
 			"(e.g., podman run --cpuset-cpus=0-3)\n")
 	}
 
-	// Set restart policy to allow retries for container disk race conditions
-	pod.Spec.RestartPolicy = k8sv1.RestartPolicyOnFailure
+	pod.Spec.RestartPolicy = k8sv1.RestartPolicyNever
 
 	// Move restartPolicy=Always init containers to regular containers.
 	// Kubernetes 1.28+ treats these as native sidecars, but Podman doesn't
