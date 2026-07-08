@@ -13,6 +13,7 @@ Convert KubeVirt VirtualMachine definitions into standalone Pods that can run ou
 - ✅ PVC and hostDisk volume support for persistent storage
 - ✅ Passt network binding by default for standalone execution
 - ✅ Mount KVM devices for hardware virtualization
+- ✅ VM health checks for status monitoring via `podman events`
 - ✅ Compatible with Podman kube play
 - ✅ Uses KubeVirt v1.8.0 APIs
 
@@ -229,6 +230,35 @@ Adds a console proxy sidecar container for accessing the VM console.
 curl http://localhost:8080/console
 # Or use VNC/serial console clients
 ```
+
+### VM Health Checks
+
+The generated Pod includes a liveness probe on the compute container that monitors the VM domain state via `virsh`. Podman translates this into a container health check, so VM status is visible through standard podman tooling — no sidecar or extra processes needed.
+
+**Check health status of a single VM:**
+```bash
+$ podman inspect --format '{{.State.Health.Status}}' virt-launcher-myvm-compute
+healthy
+```
+
+**Watch all VM health events in real time:**
+```bash
+$ podman events --filter event=health_status
+2026-06-27 20:51:33 container health_status 8d1aa790 (name=virt-launcher-myvm-compute, health_status=healthy, vm.kubevirt.io/name=myvm)
+2026-06-27 20:52:06 container health_status 8d1aa790 (name=virt-launcher-myvm-compute, health_status=unhealthy, vm.kubevirt.io/name=myvm)
+```
+
+**Filter events for a specific VM:**
+```bash
+podman events --filter event=health_status --filter container=virt-launcher-myvm-compute
+```
+
+**List all VMs with their health status:**
+```bash
+podman ps --filter label=vm.kubevirt.io/name --format "table {{.Names}}\t{{.Status}}"
+```
+
+The health check runs `virsh domstate` every 10 seconds (after a 60-second initial delay). When a VM is running, the container is `healthy`. If the VM crashes or shuts down, the container transitions to `unhealthy` and podman emits a `health_status` event — integrating directly with existing podman monitoring workflows.
 
 ### Volume Support
 
