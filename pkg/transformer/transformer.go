@@ -6,27 +6,25 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"runtime"
 	"strings"
 
+	"github.com/google/uuid"
 	k8sv1 "k8s.io/api/core/v1"
+	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/tools/cache"
 
 	virtv1 "kubevirt.io/api/core/v1"
-	"kubevirt.io/kubevirt/pkg/util"
-	"kubevirt.io/kubevirt/pkg/virt-api/webhooks/mutating-webhook/mutators"
-	"kubevirt.io/kubevirt/pkg/network/vmispec"
-	"kubevirt.io/kubevirt/pkg/testutils"
-	"kubevirt.io/kubevirt/pkg/virt-controller/services"
-	vmCtrl "kubevirt.io/kubevirt/pkg/virt-controller/watch/vm"
-	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/client-go/tools/cache"
 	"kubevirt.io/kubevirt/pkg/defaults"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-
+	"kubevirt.io/kubevirt/pkg/virt-api/webhooks/mutating-webhook/mutators"
+	"kubevirt.io/kubevirt/pkg/virt-controller/services"
+	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 )
 
 type VMToPodTransformer struct {
@@ -103,7 +101,7 @@ func NewVMToPodTransformer(opts ...TransformerOption) *VMToPodTransformer {
 	}
 	kv.Spec.Configuration.DeveloperConfiguration.FeatureGates = []string{"ImageVolume", "HostDisk"}
 
-	config, _, _ := testutils.NewFakeClusterConfigUsingKV(kv)
+	config, _ := newClusterConfig(kv)
 
     pvcCache := cache.NewIndexer(cache.DeletionHandlingMetaNamespaceKeyFunc, nil)
     resourceQuotaStore := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
@@ -177,7 +175,7 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 	// Apply VM defaults
 	defaults.SetVirtualMachineDefaults(vm, t.ClusterConfig, nil)
 
-	vmi := vmCtrl.SetupVMIFromVM(vm)
+	vmi := setupVMIFromVM(vm)
 
 	if err := defaults.SetDefaultVirtualMachineInstance(t.ClusterConfig, vmi); err != nil {
 		return nil, fmt.Errorf("failed to set VMI defaults: %v", err)
@@ -186,12 +184,8 @@ func (t *VMToPodTransformer) transformBytes(data []byte) (*k8sv1.Pod, error) {
 		return nil, fmt.Errorf("failed to apply VMI mutations: %v", err)
 	}
 
-	if err := vmispec.SetDefaultNetworkInterface(t.ClusterConfig, &vmi.Spec); err != nil {
-		return nil, fmt.Errorf("failed to set default network: %v", err)
-	}
-
-	util.SetDefaultVolumeDisk(&vmi.Spec)
-	vmCtrl.AutoAttachInputDevice(vmi)
+	setDefaultNetworkInterface(t.ClusterConfig, &vmi.Spec)
+	autoAttachInputDevice(vmi)
 
 	if t.ForcePasst {
 		forcePasstBinding(&vmi.Spec)
@@ -662,4 +656,107 @@ func addPersistenceWarnings(pod *k8sv1.Pod, vm *virtv1.VirtualMachine) {
 	}
 }
 
-var codec = serializer.NewCodecFactory(runtime.NewScheme()).UniversalDeserializer()
+var codec = serializer.NewCodecFactory(k8sruntime.NewScheme()).UniversalDeserializer()
+
+var firmwareUUIDns = uuid.MustParse("6a1a24a1-4061-4607-8bf4-a3963d0c5895")
+
+func setupVMIFromVM(vm *virtv1.VirtualMachine) *virtv1.VirtualMachineInstance {
+	vmi := &virtv1.VirtualMachineInstance{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: virtv1.GroupVersion.String(),
+			Kind:       "VirtualMachineInstance",
+		},
+		ObjectMeta: *vm.Spec.Template.ObjectMeta.DeepCopy(),
+		Spec:       *vm.Spec.Template.Spec.DeepCopy(),
+	}
+	vmi.ObjectMeta.Name = vm.ObjectMeta.Name
+	vmi.ObjectMeta.GenerateName = ""
+	vmi.ObjectMeta.Namespace = vm.ObjectMeta.Namespace
+	vmi.ObjectMeta.Labels = vm.Spec.Template.ObjectMeta.Labels
+	vmi.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(vm, virtv1.VirtualMachineGroupVersionKind),
+	}
+
+	if vmi.Spec.Domain.Firmware == nil {
+		vmi.Spec.Domain.Firmware = &virtv1.Firmware{}
+	}
+	if vmi.Spec.Domain.Firmware.UUID == "" {
+		vmi.Spec.Domain.Firmware.UUID = types.UID(uuid.NewSHA1(firmwareUUIDns, []byte(vmi.Name)).String())
+	}
+
+	setDefaultVolumeDisk(&vmi.Spec)
+
+	return vmi
+}
+
+func autoAttachInputDevice(vmi *virtv1.VirtualMachineInstance) {
+	if vmi.Spec.Domain.Devices.AutoattachInputDevice == nil ||
+		!*vmi.Spec.Domain.Devices.AutoattachInputDevice ||
+		len(vmi.Spec.Domain.Devices.Inputs) > 0 {
+		return
+	}
+	vmi.Spec.Domain.Devices.Inputs = append(vmi.Spec.Domain.Devices.Inputs,
+		virtv1.Input{Name: "default-0"})
+}
+
+func setDefaultVolumeDisk(spec *virtv1.VirtualMachineInstanceSpec) {
+	diskAndFilesystemNames := make(map[string]struct{})
+	for _, disk := range spec.Domain.Devices.Disks {
+		diskAndFilesystemNames[disk.Name] = struct{}{}
+	}
+	for _, fs := range spec.Domain.Devices.Filesystems {
+		diskAndFilesystemNames[fs.Name] = struct{}{}
+	}
+	for _, volume := range spec.Volumes {
+		if _, found := diskAndFilesystemNames[volume.Name]; !found {
+			spec.Domain.Devices.Disks = append(spec.Domain.Devices.Disks,
+				virtv1.Disk{Name: volume.Name})
+		}
+	}
+}
+
+func setDefaultNetworkInterface(config *virtconfig.ClusterConfig, spec *virtv1.VirtualMachineInstanceSpec) {
+	if autoAttach := spec.Domain.Devices.AutoattachPodInterface; autoAttach != nil && !*autoAttach {
+		return
+	}
+	if len(spec.Networks) != 0 || len(spec.Domain.Devices.Interfaces) != 0 {
+		return
+	}
+	spec.Domain.Devices.Interfaces = []virtv1.Interface{*virtv1.DefaultMasqueradeNetworkInterface()}
+	spec.Networks = []virtv1.Network{*virtv1.DefaultPodNetwork()}
+}
+
+// noopListerWatcher satisfies cache.ListerWatcher for informers that only need a pre-populated store.
+type noopListerWatcher struct{}
+
+func (noopListerWatcher) List(_ metav1.ListOptions) (k8sruntime.Object, error) {
+	return &virtv1.KubeVirtList{}, nil
+}
+
+func (noopListerWatcher) Watch(_ metav1.ListOptions) (watch.Interface, error) {
+	return watch.NewFake(), nil
+}
+
+func newClusterConfig(kv *virtv1.KubeVirt) (*virtconfig.ClusterConfig, error) {
+	kv.ResourceVersion = "1"
+	kv.Status.Phase = "Deployed"
+
+	crdInformer := cache.NewSharedIndexInformer(noopListerWatcher{}, &extv1.CustomResourceDefinition{}, 0, cache.Indexers{})
+	kvInformer := cache.NewSharedIndexInformer(noopListerWatcher{}, &virtv1.KubeVirt{}, 0, cache.Indexers{})
+
+	stopCh := make(chan struct{})
+	go crdInformer.Run(stopCh)
+	go kvInformer.Run(stopCh)
+	cache.WaitForCacheSync(stopCh, crdInformer.HasSynced, kvInformer.HasSynced)
+	close(stopCh)
+
+	kvInformer.GetStore().Add(kv)
+	crdInformer.GetStore().Add(&extv1.CustomResourceDefinition{
+		Spec: extv1.CustomResourceDefinitionSpec{
+			Group: "cdi.kubevirt.io",
+			Names: extv1.CustomResourceDefinitionNames{Kind: "DataVolume"},
+		},
+	})
+
+	return virtconfig.NewClusterConfigWithCPUArch(crdInformer, kvInformer, "kubevirt", runtime.GOARCH)
+}
